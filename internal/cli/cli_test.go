@@ -258,6 +258,16 @@ func TestRunServeStoreOpenFailureRedactsPath(t *testing.T) {
 	if strings.Contains(logs, dbPath) {
 		t.Errorf("logs leaked DB file path (%q):\n%s", dbPath, logs)
 	}
+	// Defence-in-depth against v2 review issue #3 for #6: even the
+	// basename of the DB file must not survive the scrub. dataDir is a
+	// strict prefix of dbPath, so a future ordering regression in
+	// scrubPaths (substituting the shorter prefix first) would leave
+	// "<redacted>/tabby-sync.db" in the output and pass the two
+	// substring checks above. Asserting the basename's absence pins the
+	// longest-first contract from the test side.
+	if strings.Contains(logs, "tabby-sync.db") {
+		t.Errorf("logs leaked DB file basename:\n%s", logs)
+	}
 	if !strings.Contains(logs, "<redacted>") {
 		t.Errorf("logs missing <redacted> scrub marker:\n%s", logs)
 	}

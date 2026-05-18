@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 
@@ -171,8 +172,21 @@ func redactPath(v string) string {
 // helper does not depend on path-format quirks. Empty secrets are
 // skipped to avoid an infinite "<redacted>" sprinkle when DataDir is
 // unset (which Load already rejects, but defence in depth is cheap).
+//
+// Secrets are processed longest-first so a shorter prefix (e.g.
+// cfg.DataDir) cannot consume part of a longer secret (e.g. dbPath =
+// filepath.Join(cfg.DataDir, "tabby-sync.db")) and leave the basename
+// behind in the redacted output. v2 semantic review issue #3 for #6
+// flagged this as a defence-in-depth gap; sorting here means the call
+// site is no longer order-sensitive and a future maintainer cannot
+// reintroduce the leak by reordering arguments.
 func scrubPaths(msg string, secrets ...string) string {
-	for _, s := range secrets {
+	// Copy so we do not mutate the caller's slice.
+	ordered := append([]string(nil), secrets...)
+	sort.Slice(ordered, func(i, j int) bool {
+		return len(ordered[i]) > len(ordered[j])
+	})
+	for _, s := range ordered {
 		if s == "" {
 			continue
 		}
