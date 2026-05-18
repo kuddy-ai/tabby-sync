@@ -7,9 +7,15 @@ import (
 	"strings"
 )
 
-// bearerPrefix is the literal RFC 6750 scheme prefix the middleware
-// expects, including the trailing space. The match is case-sensitive
-// per RFC 6750 §2.1 ("The string 'Bearer' is case-sensitive").
+// bearerPrefix is the literal scheme prefix (with trailing space) the
+// middleware expects to find at the start of an Authorization header.
+// RFC 7235 §2.1 defines auth-scheme as a token compared
+// case-insensitively, so the prefix match uses [strings.EqualFold] over
+// the leading len(bearerPrefix) bytes. Lenient client libraries that
+// normalise the scheme to lowercase ("bearer ") or uppercase
+// ("BEARER ") are therefore accepted; the canonical capitalisation
+// "Bearer " is what the middleware emits in WWW-Authenticate
+// challenges and what docs/users.yml.example illustrates.
 const bearerPrefix = "Bearer "
 
 // ctxUserKey is the unexported context key used to stash an authenticated
@@ -60,12 +66,17 @@ func Bearer(store *UserStore, logger *slog.Logger) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			authz := r.Header.Get("Authorization")
-			if authz == "" || !strings.HasPrefix(authz, bearerPrefix) {
+			// Case-insensitive prefix check per RFC 7235 §2.1: the
+			// scheme name is a token compared case-insensitively. Both
+			// "Bearer foo" and "bearer foo" are therefore accepted; the
+			// extracted token (everything after the 7-byte prefix) is
+			// preserved verbatim.
+			if len(authz) < len(bearerPrefix) || !strings.EqualFold(authz[:len(bearerPrefix)], bearerPrefix) {
 				logger.LogAttrs(r.Context(), slog.LevelDebug, "unauthorized")
 				writeUnauthorized(w)
 				return
 			}
-			token := strings.TrimPrefix(authz, bearerPrefix)
+			token := authz[len(bearerPrefix):]
 			// An empty token after the prefix, or one carrying any
 			// whitespace, is rejected. Tokens are opaque server-issued
 			// strings and never legitimately contain whitespace.

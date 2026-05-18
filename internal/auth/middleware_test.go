@@ -229,3 +229,33 @@ func TestBearerHeaderValueIsNeverLogged(t *testing.T) {
 		t.Errorf("logs leaked the verbatim Authorization header: %s", logs)
 	}
 }
+
+// TestBearerSchemeCaseInsensitiveMatchesRFC7235 pins the v1 review's
+// fix for issue #1: RFC 7235 §2.1 makes the auth-scheme name a token
+// compared case-insensitively, so a lenient client that normalises the
+// scheme to lowercase ("bearer ") or uppercase ("BEARER ") MUST still
+// authenticate. This is the regression test for any future change that
+// re-tightens the prefix check back to a byte-exact comparison.
+func TestBearerSchemeCaseInsensitiveMatchesRFC7235(t *testing.T) {
+	t.Parallel()
+
+	for _, scheme := range []string{"bearer ", "BEARER ", "BeArEr "} {
+		scheme := scheme
+		t.Run(strings.TrimSpace(scheme), func(t *testing.T) {
+			t.Parallel()
+			want := auth.User{ID: 1, Name: "alice"}
+			h, rec, _ := build(t, fixtureMixed(t), want)
+			req := httptest.NewRequest(http.MethodGet, "/anything", nil)
+			req.Header.Set("Authorization", scheme+"alice-token")
+			rr := httptest.NewRecorder()
+			h.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusOK {
+				t.Errorf("scheme=%q status = %d; want 200 (RFC 7235 §2.1: scheme is case-insensitive)", scheme, rr.Code)
+			}
+			if !rec.called {
+				t.Errorf("scheme=%q downstream handler was not called", scheme)
+			}
+		})
+	}
+}
