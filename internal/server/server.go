@@ -47,39 +47,9 @@ func New(cfg *config.Config, logger *slog.Logger) *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz)
 
-	// Middleware chain, outermost first. Order matters:
-	//
-	//  1. SecurityHeaders runs first so its headers land on EVERY response
-	//     emitted by the server, including 413 from MaxBodyBytes, 500 from
-	//     Recover, and any future auth-failure responses.
-	//  2. RequestID assigns or accepts an X-Request-Id before any logger
-	//     reads from the context, so every subsequent log line is
-	//     correlatable.
-	//  3. Recover wraps the rest of the chain so a panic in the access-log,
-	//     body-limit, auth, or handler layer becomes a generic 500 rather
-	//     than tearing down the goroutine.
-	//  4. AccessLog observes the final status code (after Recover has
-	//     written 500 on panic) and the response size, and attaches the
-	//     request id picked up from the context.
-	//  5. MaxBodyBytes pre-reads the request body so handlers (including
-	//     ones that never touch r.Body) cannot be flooded with arbitrarily
-	//     large payloads.
-	//  6. auth.None is a placeholder so the chain shape is stable; it
-	//     keeps /healthz reachable without authentication and will be
-	//     replaced by a real authenticator in a later issue.
-	handler := middleware.Chain(
-		mux,
-		middleware.SecurityHeaders(),
-		middleware.RequestID,
-		middleware.Recover(logger),
-		middleware.AccessLog(logger),
-		middleware.MaxBodyBytes(middleware.DefaultMaxBodyBytes),
-		auth.None(),
-	)
-
 	return &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           handler,
+		Handler:           buildHandler(mux, logger),
 		ReadHeaderTimeout: defaultReadHeaderTimeout,
 		ReadTimeout:       defaultReadTimeout,
 		WriteTimeout:      defaultWriteTimeout,
@@ -87,6 +57,45 @@ func New(cfg *config.Config, logger *slog.Logger) *http.Server {
 		MaxHeaderBytes:    defaultMaxHeaderBytes,
 		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelError),
 	}
+}
+
+// buildHandler wraps the supplied mux with the standard middleware chain.
+// It is unexported and exists so that internal/server tests can build the
+// exact same chain around a test-only handler (for example, one that
+// always panics) without having to reach into the production mux.
+//
+// Middleware chain, outermost first. Order matters:
+//
+//  1. SecurityHeaders runs first so its headers land on EVERY response
+//     emitted by the server, including 413 from MaxBodyBytes, 500 from
+//     Recover, and any future auth-failure responses.
+//  2. RequestID assigns or accepts an X-Request-Id before any logger
+//     reads from the context, so every subsequent log line is
+//     correlatable.
+//  3. AccessLog runs OUTSIDE Recover so it observes the final status
+//     code (including a 500 written by Recover when an inner handler
+//     panics) and the response size, and can attach the request id
+//     picked up from the context. AccessLog's post-handler LogAttrs
+//     call would otherwise be skipped on panic.
+//  4. Recover wraps the rest of the chain so a panic in the body-limit,
+//     auth, or handler layer becomes a generic 500 rather than tearing
+//     down the goroutine.
+//  5. MaxBodyBytes pre-reads the request body so handlers (including
+//     ones that never touch r.Body) cannot be flooded with arbitrarily
+//     large payloads.
+//  6. auth.None is a placeholder so the chain shape is stable; it
+//     keeps /healthz reachable without authentication and will be
+//     replaced by a real authenticator in a later issue.
+func buildHandler(mux http.Handler, logger *slog.Logger) http.Handler {
+	return middleware.Chain(
+		mux,
+		middleware.SecurityHeaders(),
+		middleware.RequestID,
+		middleware.AccessLog(logger),
+		middleware.Recover(logger),
+		middleware.MaxBodyBytes(middleware.DefaultMaxBodyBytes),
+		auth.None(),
+	)
 }
 
 // healthz is the unauthenticated liveness probe. The body is intentionally

@@ -112,6 +112,147 @@ func TestRequestIDRejectsMaliciousInbound(t *testing.T) {
 	}
 }
 
+func TestRecoverRePanicsErrAbortHandler(t *testing.T) {
+	t.Parallel()
+
+	var logBuf bytes.Buffer
+	logger := newJSONLogger(&logBuf)
+
+	chain := middleware.Chain(
+		http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+			panic(http.ErrAbortHandler)
+		}),
+		middleware.RequestID,
+		middleware.Recover(logger),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/abort", nil)
+	rr := httptest.NewRecorder()
+
+	// Recover must re-panic the sentinel so net/http's own server can
+	// observe it. We catch the propagation here in the test.
+	var caught any
+	func() {
+		defer func() {
+			caught = recover()
+		}()
+		chain.ServeHTTP(rr, req)
+	}()
+
+	if caught == nil {
+		t.Fatalf("expected http.ErrAbortHandler to propagate, got nil")
+	}
+	if err, ok := caught.(error); !ok || err != http.ErrAbortHandler { //nolint:errorlint // sentinel comparison is intentional
+		t.Fatalf("propagated value = %#v; want http.ErrAbortHandler", caught)
+	}
+
+	logs := logBuf.String()
+	if strings.Contains(logs, "panic recovered") {
+		t.Errorf("Recover should not log when re-panicking ErrAbortHandler: %s", logs)
+	}
+}
+
+func TestRecoverLogsPanicType(t *testing.T) {
+	t.Parallel()
+
+	var logBuf bytes.Buffer
+	logger := newJSONLogger(&logBuf)
+
+	chain := middleware.Chain(
+		http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+			panic(42) // int panic to make panic_type easy to assert
+		}),
+		middleware.RequestID,
+		middleware.Recover(logger),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/typed-panic", nil)
+	rr := httptest.NewRecorder()
+	chain.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d; want 500", rr.Code)
+	}
+	logs := logBuf.String()
+	if !strings.Contains(logs, `"panic_type":"int"`) {
+		t.Errorf("logs missing panic_type=int: %s", logs)
+	}
+}
+
+// errReader simulates an io.Reader that returns a non-EOF error on the
+// first read, which is what MaxBodyBytes turns into a 400 response.
+type errReader struct{}
+
+func (errReader) Read(_ []byte) (int, error) {
+	return 0, io.ErrUnexpectedEOF
+}
+
+func (errReader) Close() error { return nil }
+
+func TestMaxBodyBytesReadErrorReturns400(t *testing.T) {
+	t.Parallel()
+
+	called := false
+	chain := middleware.Chain(
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			called = true
+			w.WriteHeader(http.StatusOK)
+		}),
+		middleware.MaxBodyBytes(1024),
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Body = errReader{}
+	rr := httptest.NewRecorder()
+	chain.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d; want 400", rr.Code)
+	}
+	if got := rr.Body.String(); got != "invalid request body\n" {
+		t.Errorf("body = %q; want %q", got, "invalid request body\n")
+	}
+	if called {
+		t.Errorf("downstream handler ran despite mid-read error")
+	}
+}
+
+// flushRecorder is an httptest.ResponseRecorder that tracks how many
+// times Flush was called; it lets us assert that statusRecorder forwards
+// http.Flusher to the underlying writer.
+type flushRecorder struct {
+	*httptest.ResponseRecorder
+	flushed int
+}
+
+func (f *flushRecorder) Flush() { f.flushed++ }
+
+func TestStatusRecorderForwardsFlush(t *testing.T) {
+	t.Parallel()
+
+	fr := &flushRecorder{ResponseRecorder: httptest.NewRecorder()}
+
+	chain := middleware.Chain(
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			f, ok := w.(http.Flusher)
+			if !ok {
+				t.Fatalf("ResponseWriter does not implement http.Flusher inside the chain")
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("partial"))
+			f.Flush()
+		}),
+		middleware.AccessLog(slog.New(slog.NewJSONHandler(io.Discard, nil))),
+		middleware.Recover(slog.New(slog.NewJSONHandler(io.Discard, nil))),
+	)
+
+	chain.ServeHTTP(fr, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if fr.flushed == 0 {
+		t.Errorf("underlying ResponseWriter.Flush was never invoked through the chain")
+	}
+}
+
 func TestRecoverWritesGeneric500AndLogs(t *testing.T) {
 	t.Parallel()
 

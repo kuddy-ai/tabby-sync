@@ -128,6 +128,93 @@ func TestServerRejectsOversizedBody(t *testing.T) {
 	if strings.Contains(rr.Body.String(), "aaaa") {
 		t.Errorf("413 response echoes the request body: %q", rr.Body.String())
 	}
+	assertSecurityHeadersAndRequestID(t, rr)
+}
+
+// assertSecurityHeadersAndRequestID is a shared helper that pins the five
+// security headers and a non-empty X-Request-Id on a recorded response,
+// regardless of the underlying status code. The chain order in
+// internal/server/server.go promises these land on every response,
+// including 413 (from MaxBodyBytes) and panic-induced 500 (from Recover);
+// review v1, issue #2 asked for that promise to be tested directly.
+func assertSecurityHeadersAndRequestID(t *testing.T, rr *httptest.ResponseRecorder) {
+	t.Helper()
+	wantHeaders := map[string]string{
+		"X-Content-Type-Options":  "nosniff",
+		"Referrer-Policy":         "no-referrer",
+		"Cache-Control":           "no-store",
+		"Content-Security-Policy": "frame-ancestors 'none'",
+		"X-Frame-Options":         "DENY",
+	}
+	for k, want := range wantHeaders {
+		if got := rr.Header().Get(k); got != want {
+			t.Errorf("header %q = %q; want %q", k, got, want)
+		}
+	}
+	if got := rr.Header().Get(middleware.HeaderRequestID); got == "" {
+		t.Errorf("missing %s header", middleware.HeaderRequestID)
+	}
+}
+
+func TestPanic500CarriesSecurityHeadersAndRequestID(t *testing.T) {
+	t.Parallel()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/boom", func(_ http.ResponseWriter, _ *http.Request) {
+		panic("boom-secret-marker")
+	})
+	handler := server.BuildHandlerForTest(mux, quietLogger())
+
+	req := httptest.NewRequest(http.MethodGet, "/boom", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d; want 500", rr.Code)
+	}
+	if body := rr.Body.String(); body != "internal server error\n" {
+		t.Errorf("body = %q; want generic 500 message", body)
+	}
+	if strings.Contains(rr.Body.String(), "boom-secret-marker") {
+		t.Errorf("500 response leaks panic value: %q", rr.Body.String())
+	}
+	assertSecurityHeadersAndRequestID(t, rr)
+}
+
+func TestPanic500IsObservedByAccessLog(t *testing.T) {
+	t.Parallel()
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/boom", func(_ http.ResponseWriter, _ *http.Request) {
+		panic("boom-observed-by-access-log")
+	})
+	handler := server.BuildHandlerForTest(mux, logger)
+
+	req := httptest.NewRequest(http.MethodGet, "/boom", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d; want 500", rr.Code)
+	}
+	logs := logBuf.String()
+	// The access log entry must run AFTER Recover has converted the panic
+	// into a 500 — that is the whole point of the chain order. If the
+	// chain were inverted (Recover outside AccessLog) this assertion
+	// would fail because AccessLog's post-handler LogAttrs is never
+	// reached on panic.
+	if !strings.Contains(logs, `"msg":"http access"`) {
+		t.Errorf("access log line missing for panicked request: %s", logs)
+	}
+	if !strings.Contains(logs, `"status":500`) {
+		t.Errorf("access log did not record the 500 status: %s", logs)
+	}
+	if !strings.Contains(logs, `"msg":"panic recovered"`) {
+		t.Errorf("recover log line missing: %s", logs)
+	}
 }
 
 func TestNewSetsTimeoutsAndHeaderCap(t *testing.T) {

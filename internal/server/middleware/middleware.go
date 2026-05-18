@@ -15,6 +15,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -112,6 +113,15 @@ func MustFromContext(ctx context.Context) string {
 // statusRecorder wraps an [http.ResponseWriter] so middlewares can observe
 // the eventually-written status code, the number of body bytes written,
 // and whether the header has already been flushed.
+//
+// The recorder forwards [http.Flusher] when the underlying writer
+// implements it so streaming handlers (server-sent events, chunked
+// responses) can still flush through the chain. The other optional
+// interfaces ([http.Hijacker], [http.CloseNotifier], [http.Pusher]) are
+// not forwarded today because no current handler relies on them.
+//
+// TODO(#5-followup): forward Hijacker/CloseNotifier/Pusher once a handler
+// in this codebase actually requires them. See review v1, issue #7.
 type statusRecorder struct {
 	http.ResponseWriter
 	status      int
@@ -138,14 +148,34 @@ func (s *statusRecorder) Write(p []byte) (int, error) {
 	return n, err
 }
 
+// Flush implements [http.Flusher] when the wrapped ResponseWriter does.
+// It is a no-op otherwise so that callers can rely on the assertion
+// `_, ok := w.(http.Flusher)` succeeding for any writer that genuinely
+// supports flushing through the middleware chain.
+func (s *statusRecorder) Flush() {
+	if f, ok := s.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 // Recover returns a middleware that catches any panic raised by a
 // downstream handler. It logs the panic value at slog.LevelError together
-// with the request id, method, path and a full goroutine stack, and
-// returns a generic 500 response to the client. The panic value and stack
-// are NEVER written to the response body.
+// with the request id, method, path, the type of the panic value, and a
+// full goroutine stack, and returns a generic 500 response to the client.
+// The panic value and stack are NEVER written to the response body.
 //
 // If the wrapped handler had already started writing a response before
 // panicking we cannot safely emit a fresh status line, so we only log.
+//
+// The sentinel [http.ErrAbortHandler] is intentionally re-panicked: it
+// is the documented contract for asking the server to abort without
+// further logging, and re-panicking lets the standard library handle it.
+//
+// Logging contract: the recovered value is written to the ERROR log via
+// slog.Any, so callers MUST NOT panic with values that contain secrets
+// (tokens, master keys, raw configuration, request bodies, etc.). The
+// type of the panic value is always logged separately as panic_type so
+// type information is structured even when the value itself is opaque.
 func Recover(logger *slog.Logger) Middleware {
 	if logger == nil {
 		logger = slog.Default()
@@ -168,6 +198,7 @@ func Recover(logger *slog.Logger) Middleware {
 					slog.String("request_id", MustFromContext(r.Context())),
 					slog.String("method", r.Method),
 					slog.String("path", r.URL.Path),
+					slog.String("panic_type", fmt.Sprintf("%T", v)),
 					slog.Any("panic", v),
 					slog.String("stack", string(debug.Stack())),
 				)
@@ -254,6 +285,14 @@ const DefaultMaxBodyBytes int64 = 1 << 20
 // touch the body (for example a GET handler that still receives a body
 // from a misconfigured client). Empty and exactly-at-limit bodies pass
 // through untouched.
+//
+// Memory cost: this middleware buffers up to limit+1 bytes per in-flight
+// request before the handler runs, trading the streaming behaviour of
+// [http.MaxBytesReader] for the "413 even when the handler ignores the
+// body" guarantee. With the [DefaultMaxBodyBytes] cap of 1 MiB this is
+// bounded; raising the limit also raises peak memory per concurrent
+// request, so any future increase should be paired with a switch to a
+// streaming enforcement strategy.
 func MaxBodyBytes(limit int64) Middleware {
 	if limit < 0 {
 		limit = 0
