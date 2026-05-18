@@ -1,0 +1,48 @@
+# Environment
+.env
+.env.*
+!.env.example
+
+# Secrets and credentials
+*.key
+*.pem
+*.p12
+*.pfx
+credentials.*
+secrets.*
+token.*
+id_rsa
+id_ed25519
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.example.json
+
+# Logs
+*.log
+logs/
+
+# Build outputs
+dist/
+build/
+out/
+target/
+coverage/
+
+# Dependency folders
+node_modules/
+.venv/
+venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Local temp
+.tmp/
+tmp/
+.cache/

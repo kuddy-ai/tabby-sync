@@ -1,0 +1,142 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  security-baseline:
+    name: Security baseline
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Check line endings
+        shell: bash
+        run: |
+          if git grep -I -n $'\r' -- . ':!*.bat' ':!*.cmd' ':!*.ps1'; then
+            echo "CRLF line endings detected. Use LF except Windows scripts."
+            exit 1
+          fi
+
+      - name: Check large files
+        shell: bash
+        run: |
+          max=$((5 * 1024 * 1024))
+          failed=0
+          while IFS= read -r -d '' file; do
+            size=$(wc -c < "$file")
+            if [ "$size" -gt "$max" ]; then
+              echo "Large file: $file ($size bytes)"
+              failed=1
+            fi
+          done < <(git ls-files -z)
+          exit $failed
+
+      - name: Gitleaks scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  js-ts:
+    name: JS / TS checks
+    runs-on: ubuntu-latest
+    if: ${{ hashFiles('package.json') != '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Enable corepack
+        run: corepack enable
+      - name: Install dependencies
+        shell: bash
+        run: |
+          if [ -f pnpm-lock.yaml ]; then pnpm install --frozen-lockfile;
+          elif [ -f package-lock.json ]; then npm ci;
+          else echo "No supported lockfile found" && exit 1; fi
+      - name: Lint
+        run: pnpm run lint --if-present || npm run lint --if-present
+      - name: Typecheck
+        run: pnpm run typecheck --if-present || npm run typecheck --if-present
+      - name: Test
+        run: pnpm run test --if-present || npm run test --if-present
+      - name: Build
+        run: pnpm run build --if-present || npm run build --if-present
+      - name: Audit
+        shell: bash
+        run: |
+          if [ -f pnpm-lock.yaml ]; then pnpm audit --audit-level moderate;
+          elif [ -f package-lock.json ]; then npm audit --audit-level=moderate; fi
+
+  python:
+    name: Python checks
+    runs-on: ubuntu-latest
+    if: ${{ hashFiles('pyproject.toml') != '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Install dependencies
+        run: uv sync --locked
+      - name: Ruff
+        run: uv run --with ruff ruff check .
+      - name: Tests
+        shell: bash
+        run: |
+          if [ -d tests ]; then uv run --with pytest pytest; else echo "No tests directory found; skip pytest."; fi
+      - name: pip-audit
+        run: uv run --with pip-audit pip-audit
+
+  rust:
+    name: Rust checks
+    runs-on: ubuntu-latest
+    if: ${{ hashFiles('Cargo.toml') != '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Test
+        run: cargo test
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Audit
+        run: cargo audit
+
+  go:
+    name: Go checks
+    runs-on: ubuntu-latest
+    if: ${{ hashFiles('go.mod') != '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+      - name: gofmt
+        run: test -z "$(gofmt -l .)"
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test ./...
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - name: govulncheck
+        run: govulncheck ./...

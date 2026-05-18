@@ -1,0 +1,32 @@
+name: Bug
+about: 缺陷修复
+labels: [fix]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 问题描述
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收标准
+    validations:
+      required: true
+  - type: textarea
+    id: risk
+    attributes:
+      label: 风险点
+  - type: textarea
+    id: rollback
+    attributes:
+      label: 回滚方案

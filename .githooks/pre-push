@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+branch="$(git rev-parse --abbrev-ref HEAD)"
+branch_regex='^(feat|fix|refactor|docs|chore|perf|test|build|ci|security)/issue-[0-9]+-[a-z0-9._-]+$'
+
+if [[ "$branch" == "main" || "$branch" == "master" ]]; then
+  echo "ERROR: Pushing directly to $branch is not allowed."
+  exit 1
+fi
+
+if ! echo "$branch" | grep -Eq "$branch_regex"; then
+  echo "ERROR: Branch name does not match required pattern."
+  echo "Required: feat/issue-12-add-login"
+  exit 1
+fi
+
+changed="$(git diff --name-only origin/main...HEAD 2>/dev/null || true)"
+if echo "$changed" | grep -E '^(src|app|internal|packages|crates|cmd)/' >/dev/null 2>&1; then
+  if ! echo "$changed" | grep -E '^(README\.md|CHANGELOG\.md|AGENTS\.md|docs/)' >/dev/null 2>&1; then
+    echo "WARN: Source code changed but no docs/README/CHANGELOG/AGENTS update detected."
+  fi
+fi

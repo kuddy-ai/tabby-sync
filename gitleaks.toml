@@ -1,0 +1,11 @@
+title = "AI Native Repository Gitleaks Policy"
+
+[allowlist]
+description = "Allowed placeholders and examples"
+regexes = [
+  '''example_token|dummy|placeholder|changeme|your_token_here'''
+]
+
+paths = [
+  '''\.env\.example$'''
+]

@@ -1,0 +1,33 @@
+name: Security
+about: 安全修复或安全加固
+labels: [security]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: 安全问题概述
+      description: 不要在公开 Issue 中披露可直接利用的敏感细节。
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: 影响范围
+    validations:
+      required: true
+  - type: textarea
+    id: mitigation
+    attributes:
+      label: 修复/缓解方案
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收标准
+    validations:
+      required: true
+  - type: textarea
+    id: rollback
+    attributes:
+      label: 回滚方案

@@ -1,0 +1,36 @@
+name: Feature
+about: 功能需求
+labels: [feat]
+body:
+  - type: textarea
+    id: background
+    attributes:
+      label: 背景说明
+    validations:
+      required: true
+  - type: textarea
+    id: goal
+    attributes:
+      label: 目标
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: 变更范围
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收标准
+    validations:
+      required: true
+  - type: textarea
+    id: risk
+    attributes:
+      label: 风险点
+  - type: textarea
+    id: rollback
+    attributes:
+      label: 回滚方案

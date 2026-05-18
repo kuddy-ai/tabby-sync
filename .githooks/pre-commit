@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+current_branch="$(git branch --show-current || true)"
+
+# Detect initial commit: HEAD does not exist yet.
+if git rev-parse --verify HEAD >/dev/null 2>&1; then
+  diff_base="HEAD"
+  is_initial_commit="false"
+else
+  diff_base="$(git hash-object -t tree /dev/null)"
+  is_initial_commit="true"
+fi
+
+# Disallow direct commits to main/master, except the first repository initialization commit.
+if [[ "$current_branch" == "main" || "$current_branch" == "master" ]]; then
+  if [[ "$is_initial_commit" != "true" ]]; then
+    echo "ERROR: direct commits to $current_branch are not allowed."
+    echo "Use an issue branch, for example: feat/issue-123-short-description"
+    exit 1
+  fi
+fi
+
+staged_files="$(git diff --cached --name-only --diff-filter=ACMR "$diff_base" || true)"
+
+if [[ -z "$staged_files" ]]; then
+  exit 0
+fi
+
+# Reject sensitive files.
+sensitive_pattern='(^|/)(\.env|\.env\..*|credentials\..*|secrets\..*|token\..*|id_rsa|id_ed25519|.*\.pem|.*\.key|.*\.p12|.*\.pfx|credentials\.json|secrets\.json)$'
+
+while IFS= read -r file; do
+  if [[ "$file" =~ $sensitive_pattern ]]; then
+    # Allow .env.example.
+    if [[ "$file" == ".env.example" || "$file" == */".env.example" ]]; then
+      continue
+    fi
+
+    echo "ERROR: sensitive file staged: $file"
+    exit 1
+  fi
+done <<< "$staged_files"
+
+# Reject large files > 5MB.
+max_size=$((5 * 1024 * 1024))
+
+while IFS= read -r file; do
+  if [[ -f "$file" ]]; then
+    size="$(wc -c < "$file" | tr -d ' ')"
+    if [[ "$size" -gt "$max_size" ]]; then
+      echo "ERROR: large file staged: $file (${size} bytes). Limit is 5MB."
+      exit 1
+    fi
+  fi
+done <<< "$staged_files"
+
+# Secret scanning.
+if command -v gitleaks >/dev/null 2>&1; then
+  gitleaks protect --staged --verbose
+else
+  echo "WARNING: gitleaks is not installed; skipping secret scan."
+  echo "Install gitleaks before relying on this repository baseline."
+fi
+
+# Debug-code warning only, do not block.
+debug_pattern='console\.log|debugger|dbg!|println!|fmt\.Println|log\.Printf|TODO|FIXME'
+
+while IFS= read -r file; do
+  if [[ -f "$file" ]]; then
+    if grep -nE "$debug_pattern" "$file" >/tmp/precommit-debug-lines 2>/dev/null; then
+      echo "WARNING: debug or temporary marker found in $file:"
+      cat /tmp/precommit-debug-lines
+    fi
+  fi
+done <<< "$staged_files"
+
+exit 0
