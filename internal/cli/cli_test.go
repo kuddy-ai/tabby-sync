@@ -375,7 +375,15 @@ func TestRunServeEnvProviderHappyPath(t *testing.T) {
 // master.key file under cfg.DataDir and asserts the master-key load
 // fails with a redacted error: exit code 1, the structured failure
 // message is present with provider=file, the master.key path is
-// absent verbatim, and the <redacted> scrub marker is present.
+// absent verbatim, and no other suspicious substring (the seeded
+// key bytes, the data-dir path, the parent directory of the
+// fixture) leaks. The keys package returns the bare
+// keys.ErrInvalidLength sentinel for a wrong-length file (no path
+// is wrapped in that error path), so the cli-layer scrubPaths pass
+// is a no-op and the "<redacted>" marker is NOT guaranteed to
+// appear; the no-leak contract is therefore enforced as
+// path-absence + suspicious-substring-absence rather than as
+// "<redacted>" presence.
 func TestRunServeMasterKeyWrongLength(t *testing.T) {
 	t.Parallel()
 
@@ -384,7 +392,8 @@ func TestRunServeMasterKeyWrongLength(t *testing.T) {
 	// Seed a 31-byte master.key so the file provider's length check
 	// trips on first read.
 	masterKeyPath := filepath.Join(dataDir, "master.key")
-	if err := os.WriteFile(masterKeyPath, bytes.Repeat([]byte{0xAB}, 31), 0o600); err != nil {
+	seededKey := bytes.Repeat([]byte{0xAB}, 31)
+	if err := os.WriteFile(masterKeyPath, seededKey, 0o600); err != nil {
 		t.Fatalf("seed short master.key: %v", err)
 	}
 
@@ -427,22 +436,35 @@ func TestRunServeMasterKeyWrongLength(t *testing.T) {
 	if !strings.Contains(logs, `"provider":"file"`) {
 		t.Errorf("logs missing provider=file field:\n%s", logs)
 	}
-	if strings.Contains(logs, masterKeyPath) {
-		t.Errorf("logs leaked master.key path:\n%s", logs)
+
+	// v1 review issue #6 for #10: tighten the no-leak assertion. The
+	// previous shape softened the redaction check with t.Logf, which
+	// meant a regression that started leaking the data-dir path or
+	// the seeded key bytes (without also leaking masterKeyPath
+	// verbatim) would silently slip through. The contract now is:
+	// path-absence (authoritative) AND no other suspicious substring,
+	// where "<redacted>" presence is asserted only when the wrapped
+	// error actually had something to redact.
+	leakedSubstrings := map[string]string{
+		"master.key path":         masterKeyPath,
+		"data-dir path":           dataDir,
+		"users-file path":         usersFile,
+		"users-file parent dir":   usersDir,
+		"seeded master-key (hex)": hex.EncodeToString(seededKey),
+		"master.key basename":     filepath.Base(masterKeyPath),
+		"users.yml basename":      filepath.Base(usersFile),
 	}
-	// The provider's error already strips the path; this assertion
-	// pins the additional cli-level scrubPaths defence-in-depth.
-	if !strings.Contains(logs, "<redacted>") {
-		// The file provider's wrapPathError already strips the path,
-		// so scrubPaths may be a no-op on this particular error.
-		// At minimum, the path must not be present and the
-		// structured fields must hold; assert path-absence as the
-		// authoritative no-leak check above and tolerate the
-		// absence of the <redacted> marker only when the path
-		// truly does not appear in the wrapped error.
-		// Defence-in-depth: log the captured stderr so a regression
-		// that re-introduced the path surfaces clearly.
-		t.Logf("note: <redacted> marker not present; captured logs:\n%s", logs)
+	for label, needle := range leakedSubstrings {
+		// filepath.Base of "master.key" / "users.yml" are common
+		// dictionary words on disk but the captured logs are JSON
+		// and a regression that leaked the basename would surface
+		// as a quoted string field; the substring search is good
+		// enough to catch that without false positives because the
+		// happy-path log fields use "<set>" / "<redacted>" /
+		// "<unset>" placeholders, never the bare basename.
+		if strings.Contains(logs, needle) {
+			t.Errorf("logs leaked %s (%q):\n%s", label, needle, logs)
+		}
 	}
 }
 
