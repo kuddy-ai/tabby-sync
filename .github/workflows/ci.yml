@@ -123,20 +123,40 @@ jobs:
     name: Go checks
     runs-on: ubuntu-latest
     if: ${{ hashFiles('go.mod') != '' }}
+    env:
+      # Force module mode and refuse to mutate go.mod / go.sum during CI.
+      GOFLAGS: -mod=readonly
+      GOTOOLCHAIN: local
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
       - uses: actions/setup-go@v5
         with:
-          go-version: 'stable'
+          # Pin the Go toolchain to whatever go.mod declares so CI cannot
+          # silently drift to an unpinned "stable" version.
+          go-version-file: go.mod
+          check-latest: false
+          cache: true
+      - name: Verify module integrity
+        run: |
+          go mod download
+          go mod verify
       - name: gofmt
-        run: test -z "$(gofmt -l .)"
+        run: |
+          unformatted="$(gofmt -s -l . | grep -v '^vendor/' || true)"
+          if [ -n "$unformatted" ]; then
+            echo "The following files are not gofmt -s clean:"
+            echo "$unformatted"
+            exit 1
+          fi
       - name: Vet
         run: go vet ./...
       - name: Test
-        run: go test ./...
+        run: go test -race -count=1 ./...
       - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+        # Pin govulncheck to a specific release to avoid pulling an
+        # unreviewed @latest into CI.
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.3.0
       - name: govulncheck
         run: govulncheck ./...

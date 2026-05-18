@@ -33,6 +33,20 @@ out/
 target/
 coverage/
 
+# Go build artifacts
+bin/
+*.exe
+*.exe~
+*.test
+*.out
+*.prof
+# Vendored modules are allowed; uncomment to ignore them if not used.
+# vendor/
+
+# Go workspace files (kept local, not committed)
+go.work
+go.work.sum
+
 # Dependency folders
 node_modules/
 .venv/
