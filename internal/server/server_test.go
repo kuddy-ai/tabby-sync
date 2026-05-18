@@ -35,7 +35,7 @@ func newTestConfig() *config.Config {
 func TestHealthzHandler(t *testing.T) {
 	t.Parallel()
 
-	srv := server.New(newTestConfig(), quietLogger())
+	srv := server.New(newTestConfig(), quietLogger(), nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rr := httptest.NewRecorder()
@@ -56,7 +56,7 @@ func TestHealthzHandler(t *testing.T) {
 func TestHealthzDoesNotLeakMetadata(t *testing.T) {
 	t.Parallel()
 
-	srv := server.New(newTestConfig(), quietLogger())
+	srv := server.New(newTestConfig(), quietLogger(), nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rr := httptest.NewRecorder()
@@ -87,7 +87,7 @@ func TestHealthzDoesNotLeakMetadata(t *testing.T) {
 func TestHealthzCarriesSecurityHeadersAndRequestID(t *testing.T) {
 	t.Parallel()
 
-	srv := server.New(newTestConfig(), quietLogger())
+	srv := server.New(newTestConfig(), quietLogger(), nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rr := httptest.NewRecorder()
@@ -113,7 +113,7 @@ func TestHealthzCarriesSecurityHeadersAndRequestID(t *testing.T) {
 func TestServerRejectsOversizedBody(t *testing.T) {
 	t.Parallel()
 
-	srv := server.New(newTestConfig(), quietLogger())
+	srv := server.New(newTestConfig(), quietLogger(), nil)
 
 	// Even though /healthz is registered as GET, MaxBodyBytes runs ahead of
 	// the mux so a POST with a 2 MiB body should be rejected with 413.
@@ -163,7 +163,7 @@ func TestPanic500CarriesSecurityHeadersAndRequestID(t *testing.T) {
 	mux.HandleFunc("/boom", func(_ http.ResponseWriter, _ *http.Request) {
 		panic("boom-secret-marker")
 	})
-	handler := server.BuildHandlerForTest(mux, quietLogger())
+	handler := server.BuildHandlerForTest(mux, quietLogger(), nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/boom", nil)
 	rr := httptest.NewRecorder()
@@ -191,7 +191,7 @@ func TestPanic500IsObservedByAccessLog(t *testing.T) {
 	mux.HandleFunc("/boom", func(_ http.ResponseWriter, _ *http.Request) {
 		panic("boom-observed-by-access-log")
 	})
-	handler := server.BuildHandlerForTest(mux, logger)
+	handler := server.BuildHandlerForTest(mux, logger, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/boom", nil)
 	rr := httptest.NewRecorder()
@@ -220,7 +220,7 @@ func TestPanic500IsObservedByAccessLog(t *testing.T) {
 func TestNewSetsTimeoutsAndHeaderCap(t *testing.T) {
 	t.Parallel()
 
-	srv := server.New(newTestConfig(), quietLogger())
+	srv := server.New(newTestConfig(), quietLogger(), nil)
 	if srv.ReadHeaderTimeout <= 0 {
 		t.Errorf("ReadHeaderTimeout = %v; want > 0", srv.ReadHeaderTimeout)
 	}
@@ -241,7 +241,7 @@ func TestNewSetsTimeoutsAndHeaderCap(t *testing.T) {
 func TestRunGracefulShutdown(t *testing.T) {
 	t.Parallel()
 
-	srv := server.New(newTestConfig(), quietLogger())
+	srv := server.New(newTestConfig(), quietLogger(), nil)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -292,7 +292,7 @@ func TestRunGracefulShutdown(t *testing.T) {
 func TestRunReturnsServeErrorImmediately(t *testing.T) {
 	t.Parallel()
 
-	srv := server.New(newTestConfig(), quietLogger())
+	srv := server.New(newTestConfig(), quietLogger(), nil)
 
 	// Pre-close the listener so Serve returns net.ErrClosed without ever
 	// being canceled by ctx. Run must surface that error rather than block.
@@ -332,4 +332,67 @@ func waitForServer(t *testing.T, addr string, total time.Duration) bool {
 		time.Sleep(10 * time.Millisecond)
 	}
 	return false
+}
+
+// alwaysUnauthorized is the test-only auth.Middleware that ALWAYS writes
+// 401 and never calls next. It lets the route-aware bypass and the
+// "protected route requires auth" tests assert end-to-end behaviour
+// without spinning up a real users.yml fixture.
+func alwaysUnauthorized(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="tabby-sync"`)
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"unauthorized"}` + "\n"))
+	})
+}
+
+func TestHealthzBypassesAuth(t *testing.T) {
+	t.Parallel()
+
+	srv := server.New(newTestConfig(), quietLogger(), alwaysUnauthorized)
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("status = %d; want 200 (bypass should let /healthz through)", rr.Code)
+	}
+	if rr.Body.String() != "ok\n" {
+		t.Errorf("body = %q; want %q", rr.Body.String(), "ok\n")
+	}
+}
+
+func TestProtectedRouteRequiresAuth(t *testing.T) {
+	t.Parallel()
+
+	srv := server.New(newTestConfig(), quietLogger(), alwaysUnauthorized)
+
+	req := httptest.NewRequest(http.MethodGet, "/unknown", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d; want 401 (auth must run before mux not-found)", rr.Code)
+	}
+	if got := rr.Header().Get("WWW-Authenticate"); got != `Bearer realm="tabby-sync"` {
+		t.Errorf("WWW-Authenticate = %q; want Bearer realm=\"tabby-sync\"", got)
+	}
+}
+
+func TestHealthzWithTrailingSlashIsStillProtected(t *testing.T) {
+	t.Parallel()
+
+	// The bypass compares URL.Path to the literal "/healthz" so a
+	// /healthz/ or /healthz/extra request must still be gated by the
+	// auth middleware.
+	srv := server.New(newTestConfig(), quietLogger(), alwaysUnauthorized)
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz/", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d; want 401 (only exact /healthz bypasses auth)", rr.Code)
+	}
 }
