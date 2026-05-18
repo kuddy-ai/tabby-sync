@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/kuddy-ai/tabby-sync/internal/auth"
@@ -167,5 +169,106 @@ func TestReloadFailureKeepsOldSnapshot(t *testing.T) {
 	}
 	if u.Name != "alice" || u.ID != 1 {
 		t.Errorf("snapshot mutated after failed reload: %+v", u)
+	}
+}
+
+// TestReloadConcurrentLookupContention pins the v1 review's fix for
+// issue #5: prove the atomic.Pointer snapshot swap holds up under
+// contention. A pool of goroutines hammers Lookup against a token that
+// is valid in fixture A and invalid in fixture B while a separate
+// goroutine alternates Reload(A)/Reload(B) for the duration of the
+// run. The race detector catches data races; this test catches torn
+// snapshots (a Lookup that reads byHash from one snapshot and Disabled
+// from another) by asserting Lookup only ever returns the canonical A
+// or B user, never an inconsistent record.
+//
+// The test is intentionally bounded by an iteration count rather than
+// a wall-clock deadline so it stays deterministic in CI.
+func TestReloadConcurrentLookupContention(t *testing.T) {
+	t.Parallel()
+
+	pathA := fixtureA(t)
+	pathB := fixtureB(t)
+
+	store, err := auth.LoadUsersFile(pathA)
+	if err != nil {
+		t.Fatalf("LoadUsersFile A: %v", err)
+	}
+
+	const (
+		readers      = 16
+		swaps        = 200
+		readsPerLoop = 50
+	)
+
+	var (
+		wg       sync.WaitGroup
+		stop     atomic.Bool
+		seenA    atomic.Int64
+		seenB    atomic.Int64
+		seenMiss atomic.Int64
+	)
+
+	// Reader pool: each goroutine alternates between looking up alice
+	// and bob until the swapper signals stop. The accepted outcomes
+	// are (i) the canonical A user, (ii) the canonical B user, or
+	// (iii) ErrUnauthorized (token not in the current snapshot).
+	// Anything else (e.g. an A id paired with a B name) would be a
+	// torn read and fails the test.
+	for i := 0; i < readers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for !stop.Load() {
+				for j := 0; j < readsPerLoop; j++ {
+					for _, token := range []string{"alice-token", "bob-token"} {
+						u, err := store.Lookup(token)
+						switch {
+						case errors.Is(err, auth.ErrUnauthorized):
+							seenMiss.Add(1)
+						case err != nil:
+							t.Errorf("Lookup(%q) unexpected error: %v", token, err)
+							return
+						case u.ID == 1 && u.Name == "alice" && token == "alice-token":
+							seenA.Add(1)
+						case u.ID == 2 && u.Name == "bob" && token == "bob-token":
+							seenB.Add(1)
+						default:
+							t.Errorf("torn snapshot: token=%q user=%+v", token, u)
+							return
+						}
+					}
+				}
+			}
+		}()
+	}
+
+	// Swapper: alternate Reload(A) and Reload(B) a fixed number of
+	// times, then stop the readers. The swapper is the timing master;
+	// the readers are bounded only by stop.
+	for s := 0; s < swaps; s++ {
+		path := pathA
+		if s%2 == 1 {
+			path = pathB
+		}
+		if err := store.Reload(path); err != nil {
+			stop.Store(true)
+			wg.Wait()
+			t.Fatalf("Reload iteration %d: %v", s, err)
+		}
+	}
+	stop.Store(true)
+	wg.Wait()
+
+	// Sanity: at least one of each outcome must have been observed,
+	// otherwise the test did not actually exercise contention.
+	if seenA.Load() == 0 {
+		t.Errorf("contention test never observed alice during Reload(A) windows")
+	}
+	if seenB.Load() == 0 {
+		t.Errorf("contention test never observed bob during Reload(B) windows")
+	}
+	if seenMiss.Load() == 0 {
+		t.Errorf("contention test never observed an ErrUnauthorized miss")
 	}
 }
