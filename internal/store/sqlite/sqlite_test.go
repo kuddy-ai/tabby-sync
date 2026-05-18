@@ -4,7 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"io/fs"
+	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -348,6 +351,67 @@ func TestDeleteNotFound(t *testing.T) {
 
 	if err := st.DeleteConfig(ctx, 1, 9999); !errors.Is(err, store.ErrConfigNotFound) {
 		t.Errorf("DeleteConfig missing id = %v; want ErrConfigNotFound", err)
+	}
+}
+
+// TestOpenTightensDBFileMode pins the post-Open file mode of the main
+// SQLite database file and any -wal / -shm sidecars to 0o600. SQLite
+// otherwise creates these at the process umask (commonly 0o644 on
+// Linux), which would expose encrypted credential blobs to other local
+// users on a multi-user host. The test forces a sloppy umask so it
+// catches regressions even on hosts whose default umask already yields
+// 0o600. Skipped on Windows because os.Chmod's permission bits are a
+// stub there; the chmod call in production is harmless on Windows but
+// the assertion would not be meaningful. Addresses v1 semantic review
+// issue #2 for #6.
+func TestOpenTightensDBFileMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("file mode bits are not meaningful on Windows")
+	}
+
+	old := syscallUmask(0o022)
+	t.Cleanup(func() { _ = syscallUmask(old) })
+
+	ctx := context.Background()
+	path := newDBPath(t)
+
+	st, err := sqlite.Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+
+	// Force at least one row into the configs table so SQLite has a
+	// reason to materialise the -wal sidecar (the bookkeeping insert in
+	// applyMigrations already does this, but a direct write makes the
+	// expectation explicit).
+	if _, err := st.CreateConfig(ctx, 7, store.CreateConfigInput{
+		Name:              "warmup",
+		ContentCiphertext: []byte{0x01},
+		ContentNonce:      []byte{0x02},
+	}); err != nil {
+		t.Fatalf("CreateConfig: %v", err)
+	}
+
+	mustBe600 := func(p string) {
+		t.Helper()
+		info, err := os.Stat(p)
+		if err != nil {
+			t.Fatalf("stat %s: %v", p, err)
+		}
+		if got := info.Mode().Perm(); got != fs.FileMode(0o600) {
+			t.Errorf("%s mode = %#o; want 0600", p, got)
+		}
+	}
+
+	mustBe600(path)
+	for _, suffix := range []string{"-wal", "-shm"} {
+		p := path + suffix
+		if _, err := os.Stat(p); err == nil {
+			mustBe600(p)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("stat sidecar %s: %v", p, err)
+		}
 	}
 }
 

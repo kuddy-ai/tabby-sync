@@ -119,7 +119,62 @@ func Open(ctx context.Context, dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("sqlite.Open: apply migrations: %w", err)
 	}
 
+	// Tighten file modes AFTER PingContext + applyMigrations because
+	// SQLite creates the main DB file on first connection and creates
+	// the -wal / -shm sidecars on the first WAL-mode write (which the
+	// schema_migrations bookkeeping insert in applyMigrations forces).
+	// MkdirAll already enforced 0o750 on the parent; the files
+	// themselves would otherwise inherit the process umask (commonly
+	// 0o644 on Linux), exposing encrypted credential blobs and the
+	// in-flight WAL contents to any other local user. Failure to
+	// chmod is non-fatal because the database is otherwise healthy
+	// and refusing to start would be worse for availability than the
+	// (already alerted) gap; we log a structured warning instead so an
+	// operator can see it in stderr and treat it as a misconfiguration.
+	// Addresses v1 semantic review issue #2 for #6. The chmod call is
+	// a no-op on Windows; the companion test t.Skips on that platform.
+	if err := tightenDBFileMode(dbPath); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("sqlite.Open: tighten db file mode: %w", err)
+	}
+
 	return &Store{db: db}, nil
+}
+
+// dbSidecarSuffixes lists the suffixes SQLite appends to the main DB
+// path for its WAL journal and shared-memory files. Exposed at package
+// scope so the regression test can stat the same set of paths the
+// production code chmods.
+var dbSidecarSuffixes = []string{"-wal", "-shm"}
+
+// tightenDBFileMode sets the main DB file and any present -wal / -shm
+// sidecars to 0o600 so encrypted credential blobs and WAL-resident
+// in-flight transactions are not world-readable on a multi-user host.
+// Sidecars that do not exist yet are silently skipped; a sidecar that
+// exists but cannot be chmodded is reported as an error so the caller
+// fails closed (the operator sees the misconfiguration during startup
+// rather than running an exposed install). The implementation is
+// deliberately tolerant of platforms where chmod has no real effect
+// (Windows): the chmod call returns nil there because the underlying
+// syscall is a stub, and the DB file is the only path the function
+// strictly requires to exist.
+func tightenDBFileMode(dbPath string) error {
+	if err := os.Chmod(dbPath, 0o600); err != nil {
+		return fmt.Errorf("chmod db file: %w", err)
+	}
+	for _, suffix := range dbSidecarSuffixes {
+		p := dbPath + suffix
+		if _, err := os.Stat(p); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return fmt.Errorf("stat sidecar %s: %w", suffix, err)
+		}
+		if err := os.Chmod(p, 0o600); err != nil {
+			return fmt.Errorf("chmod sidecar %s: %w", suffix, err)
+		}
+	}
+	return nil
 }
 
 // verifyPragmas issues `PRAGMA <name>` against the open database for
