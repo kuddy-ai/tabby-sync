@@ -67,6 +67,22 @@
 - 禁止自动审批 install / postinstall / build script
 - 禁止 `curl | bash`、`wget | bash`
 
+### 4.1 Go 项目依赖规则（本仓库技术栈）
+
+本仓库是 Go 项目，AI Agent 操作 Go 依赖时必须遵守：
+
+- 必须提交 `go.mod` 和 `go.sum`；任何依赖变更都必须导致 `go.sum` 一同变更
+- 禁止在 CI 之外直接执行 `go get -u`、`go get ...@latest` 来无差别升级依赖
+- 新增依赖必须先有 Issue 说明：必要性、维护状态、替代方案、license、安全影响
+- 添加依赖的标准流程：`go get module@version` → `go mod tidy` → `go mod verify` → 提交完整 diff
+- AI 不得自动新增依赖；必须等待人工确认后才能修改 `go.mod`
+- 禁止使用未发布的 commit hash 替换稳定版本，除非 Issue 明确要求并经人工确认
+- 禁止通过 `replace` 指令指向私有 fork、未审计仓库或本地路径，除非 Issue 明确要求
+- 升级主版本（v1 → v2 等）必须由人工确认，AI 不得自动升级
+- CI 必须使用 `GOFLAGS=-mod=readonly` 防止依赖在构建期被静默修改
+- CI 必须运行 `go mod verify`、`go vet`、`gofmt -s -l`、`go test -race`、`govulncheck`
+- govulncheck 必须固定版本，禁止使用 `@latest`
+
 ## 5. CI/CD 规则
 
 - 默认 `permissions: contents: read`
