@@ -119,6 +119,59 @@ func TestFileProviderErrorDoesNotLeakPath(t *testing.T) {
 	}
 }
 
+// TestFileProviderRenameErrorDoesNotLeakPath is the regression test
+// for v1 review issues #4 and #5 of issue #10: os.Rename returns a
+// [*os.LinkError] (not a [*fs.PathError]), so an older
+// wrapPathError that only stripped [*fs.PathError] leaked both the
+// canonical master.key path AND the random temp-file path through
+// the wrapped error. The cli's scrubPaths can redact the canonical
+// path but cannot anticipate the temp-file suffix produced by
+// os.CreateTemp, so the only safe place to strip the LinkError is
+// inside the provider.
+//
+// The test forces a rename failure by pre-creating the target path
+// as a non-empty directory; os.Rename(tmp_file, non_empty_dir)
+// returns ENOTEMPTY/EEXIST wrapped in a [*os.LinkError].
+func TestFileProviderRenameErrorDoesNotLeakPath(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("rename-over-non-empty-dir behaviour differs on Windows")
+	}
+
+	dir := t.TempDir()
+	target := filepath.Join(dir, "master.key")
+	// Pre-create target as a non-empty directory so os.Rename in
+	// generate() fails with EEXIST/ENOTEMPTY (a *os.LinkError).
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatalf("seed target dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "leaf"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("seed leaf: %v", err)
+	}
+
+	_, err := keys.NewFileProvider(target).Load()
+	if err == nil {
+		t.Fatal("expected non-nil error when target path is a non-empty dir")
+	}
+	msg := err.Error()
+	// Neither the canonical path nor the parent dir may appear in the
+	// wrapped error. The temp-file path has a random suffix so we
+	// assert the directory prefix's absence (which subsumes the temp
+	// path because os.CreateTemp(dir, ...) puts the file under dir).
+	for _, leak := range []string{target, dir} {
+		if strings.Contains(msg, leak) {
+			t.Fatalf("error leaks path component %q: %q", leak, msg)
+		}
+	}
+	// The temp-file basename pattern is also forbidden; even if the
+	// directory is somehow stripped a bare ".master.key.<rand>"
+	// substring would still leak the on-disk layout.
+	if strings.Contains(msg, ".master.key.") {
+		t.Fatalf("error leaks temp-file pattern: %q", msg)
+	}
+}
+
 func TestFileProviderConcurrentFirstCall(t *testing.T) {
 	t.Parallel()
 

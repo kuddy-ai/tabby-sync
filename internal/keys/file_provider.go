@@ -134,14 +134,30 @@ func (p *FileProvider) generate() ([]byte, error) {
 	return out, nil
 }
 
-// wrapPathError strips any [*fs.PathError.Path] component out of err
-// so the wrapped message does not echo the on-disk master.key path
-// or its parent directory. errors.Is against the underlying syscall
-// error is preserved because the inner error is wrapped with %w.
+// wrapPathError strips any path component out of err so the wrapped
+// message does not echo the on-disk master.key path, its parent
+// directory, or the temporary file used during the atomic
+// temp+rename write. errors.Is against the underlying syscall error
+// is preserved because the inner error is wrapped with %w.
+//
+// Two error shapes are handled explicitly. Filesystem syscalls that
+// touch a single path return [*fs.PathError]; the rename step that
+// enforces 0o600 returns [*os.LinkError], which carries BOTH the
+// temp-file path (Old) and the canonical master.key path (New).
+// Older revisions of this helper only stripped [*fs.PathError], so a
+// rename failure leaked both paths through the cli logger because
+// the cli's scrubPaths cannot anticipate the random temp-file
+// suffix produced by os.CreateTemp. v1 review issue #4 / #5 for #10
+// flagged this; this branch closes the leak at the provider seam so
+// the cli layer never sees either path in the wrapped message.
 func wrapPathError(op string, err error) error {
 	var perr *fs.PathError
 	if errors.As(err, &perr) {
 		return fmt.Errorf("keys: %s: %w", op, perr.Err)
+	}
+	var lerr *os.LinkError
+	if errors.As(err, &lerr) {
+		return fmt.Errorf("keys: %s: %w", op, lerr.Err)
 	}
 	return fmt.Errorf("keys: %s: %w", op, err)
 }
