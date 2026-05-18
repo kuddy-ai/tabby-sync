@@ -92,10 +92,13 @@ func New(cfg *config.Config, logger *slog.Logger, authMW auth.Middleware) *http.
 //     ones that never touch r.Body) cannot be flooded with arbitrarily
 //     large payloads.
 //  6. routeAwareAuth(authMW) runs the supplied authenticator on every
-//     route except /healthz, which is exempt so liveness probes can
-//     reach the server without an Authorization header. The bypass is
-//     deliberate: /healthz exposes only the literal body "ok\n" with
-//     no version, build, configuration, DB or key state mixed in.
+//     route except a GET or HEAD request to the literal /healthz path,
+//     which is exempt so liveness probes can reach the server without
+//     an Authorization header. The bypass is deliberate: /healthz
+//     exposes only the literal body "ok\n" with no version, build,
+//     configuration, DB or key state mixed in. Non-GET/HEAD methods to
+//     /healthz are still gated, so the auth-before-mux contract holds
+//     for any other verb the mux does not register.
 func buildHandler(mux http.Handler, logger *slog.Logger, authMW auth.Middleware) http.Handler {
 	return middleware.Chain(
 		mux,
@@ -109,11 +112,13 @@ func buildHandler(mux http.Handler, logger *slog.Logger, authMW auth.Middleware)
 }
 
 // routeAwareAuth wraps an [auth.Middleware] so it applies to every route
-// except /healthz. The /healthz path is the unauthenticated liveness
-// probe; every other path is gated by authMW. Comparing r.URL.Path
-// directly is intentional: the underlying mux would otherwise normalise
-// trailing slashes and we do NOT want "/healthz/" or "/healthz/something"
-// to bypass authentication.
+// except a GET/HEAD request to the literal /healthz path. Other methods
+// (POST /healthz, OPTIONS /healthz, etc.) are still gated by authMW; the
+// mux returns 405 only after auth has run, so a probing client cannot
+// learn route shapes by bouncing requests off the bypass. Comparing
+// r.URL.Path directly (no normalisation) is intentional: the underlying
+// mux would otherwise normalise trailing slashes and we do NOT want
+// "/healthz/" or "/healthz/something" to bypass authentication.
 func routeAwareAuth(authMW auth.Middleware) auth.Middleware {
 	if authMW == nil {
 		authMW = auth.None()
@@ -121,7 +126,7 @@ func routeAwareAuth(authMW auth.Middleware) auth.Middleware {
 	return func(next http.Handler) http.Handler {
 		guarded := authMW(next)
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/healthz" {
+			if r.URL.Path == "/healthz" && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
 				next.ServeHTTP(w, r)
 				return
 			}

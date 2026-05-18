@@ -396,3 +396,48 @@ func TestHealthzWithTrailingSlashIsStillProtected(t *testing.T) {
 		t.Errorf("status = %d; want 401 (only exact /healthz bypasses auth)", rr.Code)
 	}
 }
+
+// TestHealthzWithNonGetMethodIsStillProtected pins the v1 review's fix
+// for issue #3: the bypass key is (path == "/healthz") AND (method ==
+// GET or HEAD). A POST or OPTIONS request to /healthz must still be
+// gated by the auth middleware so the auth-before-mux contract holds
+// for any verb the mux does not register; if the bypass were
+// path-only, POST /healthz would skip auth and return 405 (revealing
+// the route shape) instead of returning 401.
+func TestHealthzWithNonGetMethodIsStillProtected(t *testing.T) {
+	t.Parallel()
+
+	srv := server.New(newTestConfig(), quietLogger(), alwaysUnauthorized)
+
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch, http.MethodOptions} {
+		method := method
+		t.Run(method, func(t *testing.T) {
+			t.Parallel()
+			req := httptest.NewRequest(method, "/healthz", nil)
+			rr := httptest.NewRecorder()
+			srv.Handler.ServeHTTP(rr, req)
+			if rr.Code != http.StatusUnauthorized {
+				t.Errorf("%s /healthz status = %d; want 401 (only GET/HEAD bypass)", method, rr.Code)
+			}
+		})
+	}
+}
+
+// TestHealthzHeadBypassesAuth pins that HEAD requests, like GET, are
+// allowed through the bypass. Standard liveness-probe tooling commonly
+// uses HEAD; the auth-before-mux contract still holds because the mux
+// is registered for "GET /healthz" and Go's ServeMux serves HEAD off
+// the GET handler when no explicit HEAD pattern exists.
+func TestHealthzHeadBypassesAuth(t *testing.T) {
+	t.Parallel()
+
+	srv := server.New(newTestConfig(), quietLogger(), alwaysUnauthorized)
+
+	req := httptest.NewRequest(http.MethodHead, "/healthz", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("HEAD /healthz status = %d; want 200 (HEAD must bypass auth)", rr.Code)
+	}
+}
