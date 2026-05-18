@@ -78,7 +78,15 @@ func TestLookupWrongToken(t *testing.T) {
 	}
 }
 
-func TestLookupWrongTokenVaryingLengths(t *testing.T) {
+// TestLookupRejectsWrongTokenAtSeveralInputLengths exercises Lookup
+// against a handful of input sizes (0, 1, 16, 4096 bytes). Note that
+// SHA-256 normalises every input to a fixed-length 64-character hex
+// digest before the constant-time compare, so all four cases hit the
+// SAME code path: this test is not a length-branch coverage test, it
+// is a panic-safety pin for the zero-hash sentinel fallback. A future
+// refactor that introduced length-dependent branches would need its
+// own coverage test on top.
+func TestLookupRejectsWrongTokenAtSeveralInputLengths(t *testing.T) {
 	t.Parallel()
 
 	store, err := auth.LoadUsersFile(fixtureA(t))

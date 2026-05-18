@@ -221,6 +221,26 @@ func TestRunServeHappyPath(t *testing.T) {
 	if !strings.Contains(logs, "starting tabby-sync") {
 		t.Errorf("logs missing 'starting tabby-sync':\n%s", logs)
 	}
+	// v1 review issue #7: the happy path must emit a structured
+	// "users file loaded" log line so an operator can confirm the
+	// users.yml was consumed without the line ever naming a user.
+	// Pinning this string here means a regression that dropped the
+	// log call (or renamed the message) would surface immediately.
+	if !strings.Contains(logs, `"msg":"users file loaded"`) {
+		t.Errorf("logs missing 'users file loaded' line:\n%s", logs)
+	}
+	// v1 review issue #7: the load path must NOT log user names. The
+	// fixture loads exactly one user named "alice"; a regression that
+	// started logging the name (or any user-identifying field other
+	// than the count) would land "alice" in the captured stderr.
+	if strings.Contains(logs, "alice") {
+		t.Errorf("logs leaked the loaded user name 'alice':\n%s", logs)
+	}
+	// And the structured user_count field should be present, since
+	// it is the only operational signal that pins a non-empty load.
+	if !strings.Contains(logs, `"user_count":1`) {
+		t.Errorf("logs missing user_count=1 field:\n%s", logs)
+	}
 }
 
 func waitForLog(buf *safeBuffer, needle string, total time.Duration) bool {

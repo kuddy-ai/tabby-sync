@@ -8,6 +8,14 @@
 // chain before a real authenticator is available (notably tests and the
 // /healthz bypass).
 //
+// Reload contract. [UserStore.Reload] swaps the live snapshot
+// atomically and is safe to call concurrently with [UserStore.Lookup].
+// The hook is API-only as of issue #7: cli.runServe does NOT wire it
+// to SIGHUP, an admin endpoint, or a file watcher, so a running
+// server is stuck on whatever snapshot it loaded at startup and an
+// operator must restart the process to pick up users.yml edits. A
+// follow-up issue will introduce a runtime trigger.
+//
 // Hash choice rationale. Tokens stored in users.yml are server-issued
 // opaque secrets with at least 128 bits of entropy; they are not
 // user-chosen passwords. The threat model that motivates bcrypt or

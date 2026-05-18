@@ -77,16 +77,25 @@ func newUserSnapshot(users []User) *userSnapshot {
 }
 
 // Lookup returns the [User] whose TokenHash matches sha256(token), or
-// [ErrUnauthorized] otherwise. The function is constant-time with
-// respect to map membership: it always performs exactly one
-// crypto/subtle.ConstantTimeCompare call, comparing against either the
-// matched user's hash or [zeroHashHex] when no candidate exists. This
-// prevents a timing oracle that distinguishes "unknown hash prefix"
-// from "known hash prefix, wrong tail".
+// [ErrUnauthorized] otherwise. The function performs exactly one
+// crypto/subtle.ConstantTimeCompare call on every code path, comparing
+// against either the matched user's hash or [zeroHashHex] when no
+// candidate exists. This equalises the post-lookup compare cost
+// regardless of whether the hashed token was a map hit or a miss.
+//
+// Note that the byHash map lookup itself is NOT constant-time: a Go
+// map does data-dependent hashing and bucket probing, so a map hit and
+// a map miss leave a measurable nanosecond-scale timing delta.
+// Disabled-user hits also pay one additional struct-field load and
+// branch over the unknown-hash path. With ≥128-bit token entropy a
+// brute-force search seeded by these deltas is not feasible, but a
+// reader who relies on this code path being uniformly constant-time
+// across map membership should not. The constant-time discipline this
+// function delivers is on the credential compare itself; the rest of
+// the lookup is best-effort timing-equivalent.
 //
 // Disabled users always return ErrUnauthorized even when the supplied
-// token hashes correctly; the disabled check is timing-equivalent to
-// the unknown-hash path.
+// token hashes correctly.
 func (s *UserStore) Lookup(token string) (User, error) {
 	snap := s.snap.Load()
 
@@ -121,6 +130,14 @@ func (s *UserStore) Lookup(token string) (User, error) {
 // Lookups continue to see the old snapshot through their local pointer
 // load until they finish; new Lookups started after the swap see the
 // new snapshot.
+//
+// Operational note. Reload is API-only as of issue #7: nothing in
+// cli.runServe wires it to SIGHUP, an admin endpoint, or a file
+// watcher, so a running server is stuck on whatever snapshot it
+// loaded at startup. An operator who edits users.yml on disk MUST
+// restart the process to pick up the change. A follow-up issue will
+// land a runtime trigger; until then, callers wanting to exercise
+// Reload need to call it programmatically.
 func (s *UserStore) Reload(path string) error {
 	fresh, err := LoadUsersFile(path)
 	if err != nil {
