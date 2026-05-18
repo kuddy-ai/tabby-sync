@@ -126,8 +126,12 @@ visible to readers and self-cleans on rollback. Implementing the
 transaction requires either extending the `internal/store.Store`
 interface with a `WithTx` primitive or moving the two-step write
 inside the SQLite implementation; both are out of scope for issue
-#10. The transaction-based fix is therefore deferred to a follow-up
-issue.
+#10. **No tracking issue has been filed yet for the transactional
+fix.** Before relying on this deferral, file an issue in the
+project tracker and replace this paragraph with a concrete `#N`
+reference; if you are reading this section because you hit an
+orphan in production and there still is no tracker, the orphan
+recovery procedure below is the only documented escape hatch.
 
 ### Operator recovery for an orphan row
 
@@ -148,6 +152,40 @@ list path until the row is removed. This is a deliberate
 fail-closed posture documented as the v1 List policy; see the next
 section.
 
+#### Discovering the orphan's configID
+
+The first option above presupposes the operator already knows the
+orphan's configID, but `ListConfigsByUserPlaintext` is the only
+public surface that returns config ids and it is bricked precisely
+when an orphan exists. Until the transactional fix lands there is
+no in-process diagnostic path; the operator MUST query the SQLite
+file directly. With the server stopped (or at minimum after a
+checkpoint, because the WAL sidecar is also part of the on-disk
+state):
+
+```
+sqlite3 "${TABBY_SYNC_DATA_DIR}/tabby-sync.db" \
+  'SELECT id, length(content_ciphertext) FROM configs WHERE user_id = ?;'
+```
+
+An orphan cannot be distinguished from a valid row by inspection
+alone, since both rows hold ciphertext+nonce of the same shape. A
+heuristic that works in practice: the most-recently-inserted id
+for the affected user is by definition the row whose two-step
+UPDATE never landed and is therefore the orphan candidate. The
+operator should cross-check that id against the upstream client's
+local config inventory before issuing `DELETE FROM configs WHERE
+id=?`. The user's list path will heal as soon as the orphan row
+is gone; the dropped data MUST then be restored from one of the
+remaining options (upstream client copy, pre-incident database
+backup).
+
+This direct-SQLite step is the only documented recovery path
+until the transactional fix lands. It is intentionally not
+exposed through the wrapper or any HTTP surface; surfacing it
+would re-open the very class of attack (silently hiding rows) the
+fail-closed v1 List policy is designed to prevent.
+
 ## List Failure Policy (v1)
 
 `ListConfigsByUserPlaintext` iterates the underlying store's rows
@@ -163,8 +201,9 @@ result. The policy is fail-closed:
   until the orphan is removed (see the operator recovery list
   above).
 
-Alternatives considered and explicitly deferred to a follow-up
-issue:
+Alternatives considered (no tracker filed yet for any of them;
+file one and replace this paragraph with a concrete `#N`
+reference before counting on either alternative to land):
 
 - **skip-and-tag**: continue iteration and return an additional
   `[]int64` of failed configIDs alongside the successfully-decrypted

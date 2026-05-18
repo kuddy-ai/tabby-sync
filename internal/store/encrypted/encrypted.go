@@ -98,11 +98,13 @@ func (s *Store) Close() error {
 // Closing the orphan window in the wrapper alone is not possible
 // without either extending the [store.Store] interface with a
 // transaction primitive or moving the two-step write into the
-// SQLite implementation; both are out of scope for issue #10. The
-// transactional fix is therefore deferred to a follow-up issue. See
-// docs/CRYPTO.md ("Two-Step Write" / "Power-loss orphan window")
-// for the full design discussion and the documented operator
-// recovery procedure.
+// SQLite implementation; both are out of scope for issue #10. No
+// tracking issue has been filed yet for the transactional fix; the
+// next maintainer who wants to lift this caveat MUST file one and
+// replace this paragraph with a concrete `#N` reference. Until
+// then docs/CRYPTO.md ("Two-Step Write" / "Power-loss orphan
+// window" / "Operator recovery for an orphan row") is the only
+// documented escape hatch.
 func (s *Store) CreateConfigPlaintext(ctx context.Context, userID int64, in store.CreateConfigPlaintextInput) (store.ConfigWithPlaintext, error) {
 	// Step 1: encrypt with placeholder configID=0 and insert.
 	ct1, nonce1, err := crypto.Encrypt(s.masterKey, userID, 0, in.Content)
@@ -188,8 +190,10 @@ func (s *Store) GetConfigPlaintext(ctx context.Context, userID, configID int64) 
 // MUST NOT silently disappear from the caller's view. A single
 // undecryptable row therefore bricks the whole list path until the
 // row is removed; this is intentional. Skip-and-tag and
-// structured-failure variants were considered and deferred to a
-// follow-up issue; see docs/CRYPTO.md ("List Failure Policy") for
+// structured-failure variants were considered; no tracking issue
+// has been filed for either, so a future maintainer who wants to
+// lift the fail-closed default MUST file one before relying on
+// this deferral. See docs/CRYPTO.md ("List Failure Policy") for
 // the full discussion and the documented operator recovery
 // procedure for an orphan row.
 func (s *Store) ListConfigsByUserPlaintext(ctx context.Context, userID int64) ([]store.ConfigWithPlaintext, error) {
