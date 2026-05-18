@@ -177,9 +177,9 @@ func runServe(ctx context.Context, getenv func(string) string, stderr io.Writer)
 	}()
 	// FIXME(#8): plumb encStore into the API handlers in issue #8.
 	// Until then the wrapper is constructed (so the encryption boundary
-	// is real and exercised by tests) and Close()d on shutdown, but no
-	// HTTP handler reads from it yet.
-	_ = encStore
+	// is real and exercised by tests) and Close()d on shutdown via the
+	// deferred call above, which keeps the variable live without an
+	// explicit `_ = encStore` reference.
 
 	// Bind the listener up front so we can report the actual port and so we
 	// fail fast (with a clear error) before spinning up goroutines.

@@ -98,9 +98,88 @@ write on `CreateConfigPlaintext`:
    `(userID, assignedConfigID)` AAD with a fresh nonce, then UPDATE
    the row in place.
 
-If step 2 fails the wrapper attempts to DELETE the orphaned row so
-the database does not retain an undecryptable record. A regression
-test in `internal/store/encrypted` pins this rollback.
+If step 2 fails synchronously (Encrypt error, UPDATE error) the
+wrapper attempts to DELETE the orphaned row so the database does not
+retain an undecryptable record. A regression test in
+`internal/store/encrypted` pins this rollback.
+
+### Power-loss orphan window (known limitation)
+
+Three failure modes between step 1 and step 2 leave a row whose AAD
+is `(userID, 0)` instead of `(userID, assignedConfigID)`, which no
+future read can open:
+
+- a process kill (SIGKILL, OOM kill) between INSERT and UPDATE;
+- a host crash or power loss between INSERT and UPDATE;
+- a same-user `Get` or `List` that races a `Create` and observes the
+  row before the UPDATE has landed (transient: the next read after
+  step 2 lands works again).
+
+The first two leave a permanent orphan; the third is a transient
+window that closes once the UPDATE returns. Both surface to callers
+as `crypto.ErrDecrypt` returned UNWRAPPED (fail-closed: the wrapper
+refuses to return data it cannot authenticate).
+
+The closure for the orphan window is to wrap INSERT and UPDATE in a
+single `database/sql` transaction so the placeholder row is never
+visible to readers and self-cleans on rollback. Implementing the
+transaction requires either extending the `internal/store.Store`
+interface with a `WithTx` primitive or moving the two-step write
+inside the SQLite implementation; both are out of scope for issue
+#10. The transaction-based fix is therefore deferred to a follow-up
+issue.
+
+### Operator recovery for an orphan row
+
+Until the transactional write lands, an operator faced with a
+permanent orphan row has these options:
+
+- delete the SQLite row directly (`DELETE FROM configs WHERE id=?`)
+  if the configID is known;
+- rebuild the affected user's row set from the upstream client's
+  local copy (Tabby's local config is the source of truth in normal
+  operation);
+- restore from a pre-incident backup of `tabby-sync.db` (which is
+  why the BACKUP imperative below applies to the database too).
+
+`ListConfigsByUserPlaintext` aborts on the first decrypt failure
+(see below), so an orphan row currently bricks the affected user's
+list path until the row is removed. This is a deliberate
+fail-closed posture documented as the v1 List policy; see the next
+section.
+
+## List Failure Policy (v1)
+
+`ListConfigsByUserPlaintext` iterates the underlying store's rows
+in ascending ID order and aborts on the first row that fails to
+decrypt, returning `crypto.ErrDecrypt` UNWRAPPED with no partial
+result. The policy is fail-closed:
+
+- a tampered or replayed row MUST NOT silently disappear from the
+  caller's view (a partial result without a flagged integrity
+  failure would let an attacker hide rows by corrupting them);
+- a single orphan row from a power-loss event between the two-step
+  write's INSERT and UPDATE bricks the rest of the user's list
+  until the orphan is removed (see the operator recovery list
+  above).
+
+Alternatives considered and explicitly deferred to a follow-up
+issue:
+
+- **skip-and-tag**: continue iteration and return an additional
+  `[]int64` of failed configIDs alongside the successfully-decrypted
+  rows. Requires extending `EncryptedStore.ListConfigsByUserPlaintext`
+  with a richer return shape; would let the upcoming HTTP layer
+  (issue #8) surface a "n rows could not be decrypted" indicator
+  while still serving the legitimate ones.
+- **structured failure**: return a typed error carrying the failing
+  configID(s). Conflicts with the current contract that returns the
+  bare `crypto.ErrDecrypt` sentinel from List, which the encrypted
+  store tests pin via `errors.Is`.
+
+The fail-closed v1 policy is the conservative default; the policy
+choice for the upcoming HTTP layer (issue #8) is left to that
+issue's API design.
 
 ## Logging Discipline
 

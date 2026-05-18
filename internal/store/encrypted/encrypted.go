@@ -83,10 +83,26 @@ func (s *Store) Close() error {
 //  2. Re-encrypt the same plaintext under the assigned configID and
 //     update the row in place.
 //
-// If step 2 fails, the wrapper attempts to delete the orphaned row so
-// the database does not retain a record that no future read could
-// open. A failure to delete is appended to the returned error but
-// does not change the primary failure mode.
+// If step 2 fails synchronously, the wrapper attempts to delete the
+// orphaned row so the database does not retain a record that no
+// future read could open. A failure to delete is appended to the
+// returned error but does not change the primary failure mode.
+//
+// Known window: a process kill, host crash, or power loss BETWEEN
+// step 1 and step 2 leaves the row on disk with the placeholder
+// (userID, 0) AAD, which no future read can open. A concurrent
+// same-user Get or List that races a Create can also observe the
+// placeholder row and surface [crypto.ErrDecrypt] until the UPDATE
+// lands; this transient window closes as soon as step 2 returns.
+//
+// Closing the orphan window in the wrapper alone is not possible
+// without either extending the [store.Store] interface with a
+// transaction primitive or moving the two-step write into the
+// SQLite implementation; both are out of scope for issue #10. The
+// transactional fix is therefore deferred to a follow-up issue. See
+// docs/CRYPTO.md ("Two-Step Write" / "Power-loss orphan window")
+// for the full design discussion and the documented operator
+// recovery procedure.
 func (s *Store) CreateConfigPlaintext(ctx context.Context, userID int64, in store.CreateConfigPlaintextInput) (store.ConfigWithPlaintext, error) {
 	// Step 1: encrypt with placeholder configID=0 and insert.
 	ct1, nonce1, err := crypto.Encrypt(s.masterKey, userID, 0, in.Content)
@@ -167,6 +183,15 @@ func (s *Store) GetConfigPlaintext(ctx context.Context, userID, configID int64) 
 // ascending ID order, decrypted under the configured master key. The
 // first decrypt failure aborts the iteration with [crypto.ErrDecrypt]
 // returned UNWRAPPED.
+//
+// Policy (v1, fail-closed): a tampered, replayed, or orphaned row
+// MUST NOT silently disappear from the caller's view. A single
+// undecryptable row therefore bricks the whole list path until the
+// row is removed; this is intentional. Skip-and-tag and
+// structured-failure variants were considered and deferred to a
+// follow-up issue; see docs/CRYPTO.md ("List Failure Policy") for
+// the full discussion and the documented operator recovery
+// procedure for an orphan row.
 func (s *Store) ListConfigsByUserPlaintext(ctx context.Context, userID int64) ([]store.ConfigWithPlaintext, error) {
 	rows, err := s.inner.ListConfigsByUser(ctx, userID)
 	if err != nil {
