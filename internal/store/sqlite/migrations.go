@@ -182,10 +182,17 @@ func applyMigration(ctx context.Context, db *sql.DB, m migration) (err error) {
 
 // splitSQLStatements splits raw SQL on top-level semicolons. Trailing
 // whitespace and empty statements are dropped so trailing newlines or
-// blank lines between statements do not produce empty Exec calls. The
-// splitter is intentionally simple: tabby-sync's migrations are plain
-// DDL with no string literals containing semicolons, no triggers, and
-// no procedural blocks.
+// blank lines between statements do not produce empty Exec calls.
+//
+// The splitter is intentionally simple: tabby-sync's migrations are
+// plain DDL with no string literals containing semicolons, no
+// triggers, no procedural blocks, and no `--` line comments containing
+// semicolons. v1 semantic review issue #3 for #6 flagged that this
+// splitter will mis-attribute statements the moment one of those
+// constructs lands; migrations/README.md documents the constraint at
+// the place where new migrations actually get authored. Do not add a
+// migration that violates the constraint without upgrading this
+// helper to a real SQL tokenizer first.
 func splitSQLStatements(raw string) []string {
 	parts := strings.Split(raw, ";")
 	out := make([]string, 0, len(parts))

@@ -54,6 +54,14 @@ type Store struct {
 // values are the literal strings PRAGMA returns: SQLite reports
 // journal_mode as a lowercase string, and foreign_keys / busy_timeout /
 // synchronous as integers (rendered here as their decimal text form).
+//
+// foreign_keys=1 is enabled today even though the configs table has no
+// FK declarations yet: the upcoming users table (issue #7) will land
+// the configs.user_id -> users.id reference, and turning the pragma on
+// at the DSN means it is already in force the moment that migration
+// applies. v1 semantic review issue #6 for #6 flagged this as
+// decorative-for-now; this comment pins the rationale so a future
+// reader does not delete the pragma during cleanup.
 var expectedPragmas = []struct {
 	name string // pragma name (e.g. "journal_mode")
 	want string // expected lower-case textual form returned by PRAGMA <name>

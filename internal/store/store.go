@@ -66,6 +66,15 @@ type Config struct {
 //
 // ContentCiphertext and ContentNonce MUST both be non-nil and non-empty.
 // LastUsedWithVersion may be empty, in which case the row stores SQL NULL.
+//
+// Name is treated as opaque by the store layer: any non-NULL string,
+// including the empty string, is accepted by the schema and by the
+// SQLite implementation. Validation of Name (length limits, character
+// restrictions, uniqueness) is the responsibility of the upcoming API
+// layer (issue #8) where the user-facing error model lives, not the
+// store. This boundary is called out here in response to v1 semantic
+// review issue #5 for #6 so future readers do not mistake the lack of
+// a store-layer guard for an oversight.
 type CreateConfigInput struct {
 	Name                string
 	ContentCiphertext   []byte
@@ -80,6 +89,16 @@ type CreateConfigInput struct {
 // of ContentCiphertext or ContentNonce is non-nil and non-empty, the
 // other must also be non-nil and non-empty, otherwise [Store.UpdateConfig]
 // returns [ErrInvalidPatch].
+//
+// LastUsedWithVersion intentionally collapses the empty string and
+// SQL NULL into a single state: passing a non-nil pointer to "" on an
+// update writes SQL NULL on disk, and a NULL row reads back as the
+// empty Go string. Callers that need to clear the field should pass
+// a non-nil pointer to "". v1 semantic review issue #4 for #6
+// flagged this as a one-way mapping; the store contract pins it as
+// intentional so the upcoming API layer (issue #8) does not need to
+// invent a tri-state for a field whose only consumer treats "" as the
+// "no version recorded" signal anyway.
 type UpdateConfigPatch struct {
 	Name                *string
 	ContentCiphertext   []byte

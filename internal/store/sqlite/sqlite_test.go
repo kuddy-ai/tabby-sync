@@ -339,6 +339,77 @@ func TestUpdateNotFound(t *testing.T) {
 	}
 }
 
+// TestUpdateLastUsedWithVersionEmptyBecomesNull pins the documented
+// empty-string-collapses-to-NULL behaviour of UpdateConfigPatch.
+// LastUsedWithVersion. v1 semantic review issue #4 for #6 flagged the
+// mapping as ambiguous-by-omission; the test asserts that:
+//
+//  1. a non-nil pointer to "" overwrites a previously-set version with
+//     SQL NULL on disk and reads back as an empty Go string;
+//  2. a nil pointer leaves the existing value untouched (this is the
+//     "do not change" contract every patch field follows).
+//
+// The on-disk NULL is verified directly via a side-channel inspection
+// connection so a future regression that silently writes the empty
+// string into the column would still flip the assertion.
+func TestUpdateLastUsedWithVersionEmptyBecomesNull(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	path := newDBPath(t)
+	st, err := sqlite.Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+
+	const userID int64 = 99
+	created, err := st.CreateConfig(ctx, userID, store.CreateConfigInput{
+		Name:                "v",
+		ContentCiphertext:   []byte{0x01},
+		ContentNonce:        []byte{0x02},
+		LastUsedWithVersion: "1.2.3",
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig: %v", err)
+	}
+
+	// Clear via *string("").
+	cleared, err := st.UpdateConfig(ctx, userID, created.ID, store.UpdateConfigPatch{
+		LastUsedWithVersion: strPtr(""),
+	})
+	if err != nil {
+		t.Fatalf("UpdateConfig (clear): %v", err)
+	}
+	if cleared.LastUsedWithVersion != "" {
+		t.Errorf("after clear, LastUsedWithVersion = %q; want empty", cleared.LastUsedWithVersion)
+	}
+
+	// Side-channel: confirm the on-disk column is SQL NULL, not "".
+	db := inspect(t, path)
+	var raw sql.NullString
+	if err := db.QueryRow(`SELECT last_used_with_version FROM configs WHERE id = ?`, created.ID).Scan(&raw); err != nil {
+		t.Fatalf("inspect select: %v", err)
+	}
+	if raw.Valid {
+		t.Errorf("on-disk column = %q (Valid=true); want SQL NULL", raw.String)
+	}
+
+	// Nil pointer must leave the (now-NULL) field alone.
+	again, err := st.UpdateConfig(ctx, userID, created.ID, store.UpdateConfigPatch{
+		Name: strPtr("renamed"),
+	})
+	if err != nil {
+		t.Fatalf("UpdateConfig (no-touch): %v", err)
+	}
+	if again.LastUsedWithVersion != "" {
+		t.Errorf("after no-touch update, LastUsedWithVersion = %q; want empty", again.LastUsedWithVersion)
+	}
+	if again.Name != "renamed" {
+		t.Errorf("after no-touch update, Name = %q; want %q", again.Name, "renamed")
+	}
+}
+
 func TestDeleteNotFound(t *testing.T) {
 	t.Parallel()
 
