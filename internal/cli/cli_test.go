@@ -3,6 +3,8 @@ package cli_test
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -208,4 +210,55 @@ func waitForLog(buf *safeBuffer, needle string, total time.Duration) bool {
 		time.Sleep(10 * time.Millisecond)
 	}
 	return false
+}
+
+// TestRunServeStoreOpenFailureRedactsPath provokes a deterministic
+// sqlite.Open failure by pointing TABBY_SYNC_DATA_DIR at a regular file
+// (so MkdirAll's "not a directory" error fires synchronously) and then
+// asserts the resulting log line never echoes that path verbatim. This
+// is the regression test for v1 review issue #1: wrapped errors from
+// sqlite.Open used to leak the absolute path, defeating the redactPath
+// field on the same log line.
+func TestRunServeStoreOpenFailureRedactsPath(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	// A regular file masquerading as the data dir: filepath.Dir of
+	// "<file>/tabby-sync.db" is the file itself, and os.MkdirAll on a
+	// path whose ancestor is a non-directory returns ENOTDIR.
+	dataDir := filepath.Join(tmp, "not-a-dir")
+	if err := os.WriteFile(dataDir, []byte("blocker"), 0o600); err != nil {
+		t.Fatalf("seed blocker file: %v", err)
+	}
+
+	env := map[string]string{
+		config.EnvAddr:              "127.0.0.1:0",
+		config.EnvDataDir:           dataDir,
+		config.EnvUsersFile:         "/dev/null",
+		config.EnvMasterKeyProvider: "env",
+		config.EnvLogLevel:          "info",
+	}
+
+	var stdout bytes.Buffer
+	stderr := &safeBuffer{}
+
+	code := cli.Run(context.Background(), []string{"tabby-sync", "serve"}, fakeEnv(env), &stdout, stderr)
+	if code != 1 {
+		t.Errorf("exit code = %d; want 1", code)
+	}
+
+	logs := stderr.String()
+	if !strings.Contains(logs, "failed to open sqlite store") {
+		t.Errorf("logs missing open-failure marker:\n%s", logs)
+	}
+	if strings.Contains(logs, dataDir) {
+		t.Errorf("logs leaked TABBY_SYNC_DATA_DIR (%q):\n%s", dataDir, logs)
+	}
+	dbPath := filepath.Join(dataDir, "tabby-sync.db")
+	if strings.Contains(logs, dbPath) {
+		t.Errorf("logs leaked DB file path (%q):\n%s", dbPath, logs)
+	}
+	if !strings.Contains(logs, "<redacted>") {
+		t.Errorf("logs missing <redacted> scrub marker:\n%s", logs)
+	}
 }

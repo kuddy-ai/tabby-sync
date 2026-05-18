@@ -93,9 +93,16 @@ func runServe(ctx context.Context, getenv func(string) string, stderr io.Writer)
 	dbPath := filepath.Join(cfg.DataDir, "tabby-sync.db")
 	st, err := sqlite.Open(ctx, dbPath)
 	if err != nil {
+		// The wrapped error from sqlite.Open commonly contains the
+		// absolute DB path (os.PathError messages, ping failures echoing
+		// the DSN, etc.). Strip both cfg.DataDir and dbPath out before
+		// logging so the structured "data_dir" field stays the only place
+		// that summarises that location, and so a configured-but-broken
+		// install does not leak its on-disk layout to anyone tailing
+		// stderr. See review v1 issue #1 for #6.
 		logger.Error("failed to open sqlite store",
 			slog.String("data_dir", redactPath(cfg.DataDir)),
-			slog.String("err", err.Error()),
+			slog.String("err", scrubPaths(err.Error(), dbPath, cfg.DataDir)),
 		)
 		return 1
 	}
@@ -153,6 +160,25 @@ func redactPath(v string) string {
 		return "<unset>"
 	}
 	return "<set>"
+}
+
+// scrubPaths returns msg with every supplied secret replaced by the
+// "<redacted>" sentinel. It is used to wash filesystem paths out of
+// wrapped error strings before they reach the structured logger: the
+// SQLite driver, os.PathError, and net.OpError all happily echo the
+// absolute DB path, which would defeat the redactPath() field on the
+// same log line. The replacement is a literal substring match so the
+// helper does not depend on path-format quirks. Empty secrets are
+// skipped to avoid an infinite "<redacted>" sprinkle when DataDir is
+// unset (which Load already rejects, but defence in depth is cheap).
+func scrubPaths(msg string, secrets ...string) string {
+	for _, s := range secrets {
+		if s == "" {
+			continue
+		}
+		msg = strings.ReplaceAll(msg, s, "<redacted>")
+	}
+	return msg
 }
 
 // parseLogLevel maps a config log-level string to a slog.Level. config.Load
