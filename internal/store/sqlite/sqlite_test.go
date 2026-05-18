@@ -476,7 +476,7 @@ func TestOpenTightensDBFileMode(t *testing.T) {
 	}
 
 	mustBe600(path)
-	for _, suffix := range []string{"-wal", "-shm"} {
+	for _, suffix := range sqlite.DBSidecarSuffixes {
 		p := path + suffix
 		if _, err := os.Stat(p); err == nil {
 			mustBe600(p)
