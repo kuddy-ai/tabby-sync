@@ -21,7 +21,9 @@ import (
 
 	"github.com/kuddy-ai/tabby-sync/internal/auth"
 	"github.com/kuddy-ai/tabby-sync/internal/config"
+	"github.com/kuddy-ai/tabby-sync/internal/keys"
 	"github.com/kuddy-ai/tabby-sync/internal/server"
+	"github.com/kuddy-ai/tabby-sync/internal/store/encrypted"
 	"github.com/kuddy-ai/tabby-sync/internal/store/sqlite"
 	"github.com/kuddy-ai/tabby-sync/internal/version"
 )
@@ -93,26 +95,25 @@ func runServe(ctx context.Context, getenv func(string) string, stderr io.Writer)
 	// logged, only that the data directory is set. See
 	// docs/LOGGING_POLICY.md and AGENTS.md §7.
 	dbPath := filepath.Join(cfg.DataDir, "tabby-sync.db")
+	masterKeyPath := filepath.Join(cfg.DataDir, keys.MasterKeyFilename)
 	st, err := sqlite.Open(ctx, dbPath)
 	if err != nil {
 		// The wrapped error from sqlite.Open commonly contains the
 		// absolute DB path (os.PathError messages, ping failures echoing
-		// the DSN, etc.). Strip both cfg.DataDir and dbPath out before
-		// logging so the structured "data_dir" field stays the only place
-		// that summarises that location, and so a configured-but-broken
-		// install does not leak its on-disk layout to anyone tailing
-		// stderr. See review v1 issue #1 for #6.
+		// the DSN, etc.). Strip cfg.DataDir, dbPath, and the master.key
+		// path out before logging so the structured "data_dir" field
+		// stays the only place that summarises that location, and so a
+		// configured-but-broken install does not leak its on-disk
+		// layout to anyone tailing stderr. See review v1 issue #1 for
+		// #6. The master.key path is included in the scrub list as
+		// defence-in-depth so a future error from any layer that
+		// mentions it stays redacted regardless of order.
 		logger.Error("failed to open sqlite store",
 			slog.String("data_dir", redactPath(cfg.DataDir)),
-			slog.String("err", scrubPaths(err.Error(), dbPath, cfg.DataDir)),
+			slog.String("err", scrubPaths(err.Error(), dbPath, masterKeyPath, cfg.DataDir)),
 		)
 		return 1
 	}
-	defer func() {
-		if cerr := st.Close(); cerr != nil {
-			logger.Error("failed to close sqlite store", slog.String("err", cerr.Error()))
-		}
-	}()
 	logger.Info("sqlite store opened", slog.String("data_dir", redactPath(cfg.DataDir)))
 
 	// Load users.yml and build the Bearer-token middleware BEFORE the
@@ -125,8 +126,9 @@ func runServe(ctx context.Context, getenv func(string) string, stderr io.Writer)
 	if err != nil {
 		logger.Error("failed to load users file",
 			slog.String("users_file", redactPath(cfg.UsersFile)),
-			slog.String("err", scrubPaths(err.Error(), cfg.UsersFile)),
+			slog.String("err", scrubPaths(err.Error(), cfg.UsersFile, masterKeyPath, cfg.DataDir)),
 		)
+		_ = st.Close()
 		return 1
 	}
 	logger.Info("users file loaded",
@@ -134,6 +136,50 @@ func runServe(ctx context.Context, getenv func(string) string, stderr io.Writer)
 		slog.Int("user_count", userStore.UserCount()),
 	)
 	authMW := auth.Bearer(userStore, logger)
+
+	// Load the master key BEFORE binding the listener so a missing or
+	// malformed key fails fast with a clean exit. The provider is the
+	// only structured field on the success log line: no path, no key,
+	// no length, per docs/LOGGING_POLICY.md and AGENTS.md §7. On
+	// failure the wrapped error is scrubbed of the data dir, master.key
+	// path, users file path, and the DB path so the operator only sees
+	// the redacted summary and the generic provider name.
+	_, masterKey, err := keys.LoadFromConfig(cfg)
+	if err != nil {
+		logger.Error("failed to load master key",
+			slog.String("provider", cfg.MasterKeyProvider),
+			slog.String("err", scrubPaths(err.Error(), masterKeyPath, dbPath, cfg.UsersFile, cfg.DataDir)),
+		)
+		_ = st.Close()
+		return 1
+	}
+	logger.Info("master key loaded", slog.String("provider", cfg.MasterKeyProvider))
+
+	encStore, err := encrypted.New(st, masterKey)
+	// Wipe the local copy of the master key now that the wrapper holds
+	// its own defensive copy. Best-effort hygiene; see
+	// internal/crypto.zero for the limitations.
+	for i := range masterKey {
+		masterKey[i] = 0
+	}
+	if err != nil {
+		logger.Error("failed to wrap store with encryption",
+			slog.String("provider", cfg.MasterKeyProvider),
+			slog.String("err", scrubPaths(err.Error(), masterKeyPath, dbPath, cfg.UsersFile, cfg.DataDir)),
+		)
+		_ = st.Close()
+		return 1
+	}
+	defer func() {
+		if cerr := encStore.Close(); cerr != nil {
+			logger.Error("failed to close encrypted store", slog.String("err", cerr.Error()))
+		}
+	}()
+	// FIXME(#8): plumb encStore into the API handlers in issue #8.
+	// Until then the wrapper is constructed (so the encryption boundary
+	// is real and exercised by tests) and Close()d on shutdown, but no
+	// HTTP handler reads from it yet.
+	_ = encStore
 
 	// Bind the listener up front so we can report the actual port and so we
 	// fail fast (with a clear error) before spinning up goroutines.
