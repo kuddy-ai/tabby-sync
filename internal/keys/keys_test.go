@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 
 	"github.com/kuddy-ai/tabby-sync/internal/config"
@@ -119,8 +120,8 @@ func TestFileProviderErrorDoesNotLeakPath(t *testing.T) {
 	}
 }
 
-// TestFileProviderRenameErrorDoesNotLeakPath is the regression test
-// for v1 review issues #4 and #5 of issue #10: os.Rename returns a
+// TestWrapPathErrorStripsLinkError is the regression test for v1
+// review issues #4 and #5 of issue #10: os.Rename returns a
 // [*os.LinkError] (not a [*fs.PathError]), so an older
 // wrapPathError that only stripped [*fs.PathError] leaked both the
 // canonical master.key path AND the random temp-file path through
@@ -129,46 +130,52 @@ func TestFileProviderErrorDoesNotLeakPath(t *testing.T) {
 // os.CreateTemp, so the only safe place to strip the LinkError is
 // inside the provider.
 //
-// The test forces a rename failure by pre-creating the target path
-// as a non-empty directory; os.Rename(tmp_file, non_empty_dir)
-// returns ENOTEMPTY/EEXIST wrapped in a [*os.LinkError].
-func TestFileProviderRenameErrorDoesNotLeakPath(t *testing.T) {
+// The first iteration of this test seeded the target as a
+// non-empty directory and called Load(), but that route
+// short-circuits at os.ReadFile(target), which returns
+// [*fs.PathError] (with Err: syscall.EISDIR) and never enters
+// generate() or os.Rename; v2 review confirmed the test passed
+// even after the LinkError branch was reverted. The current shape
+// feeds a synthesized [*os.LinkError] directly to the unexported
+// wrapPathError helper (re-exported as WrapPathErrorForTest in
+// export_test.go) so the rename branch is pinned even if no live
+// rename is invoked.
+func TestWrapPathErrorStripsLinkError(t *testing.T) {
 	t.Parallel()
 
-	if runtime.GOOS == "windows" {
-		t.Skip("rename-over-non-empty-dir behaviour differs on Windows")
-	}
-
 	dir := t.TempDir()
-	target := filepath.Join(dir, "master.key")
-	// Pre-create target as a non-empty directory so os.Rename in
-	// generate() fails with EEXIST/ENOTEMPTY (a *os.LinkError).
-	if err := os.MkdirAll(target, 0o700); err != nil {
-		t.Fatalf("seed target dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(target, "leaf"), []byte("x"), 0o600); err != nil {
-		t.Fatalf("seed leaf: %v", err)
+	canonical := filepath.Join(dir, keys.MasterKeyFilename)
+	tmp := filepath.Join(dir, ".master.key.0123456789")
+	link := &os.LinkError{
+		Op:  "rename",
+		Old: tmp,
+		New: canonical,
+		Err: syscall.EEXIST,
 	}
 
-	_, err := keys.NewFileProvider(target).Load()
-	if err == nil {
-		t.Fatal("expected non-nil error when target path is a non-empty dir")
+	wrapped := keys.WrapPathErrorForTest("rename master key into place", link)
+	if wrapped == nil {
+		t.Fatal("expected non-nil wrapped error")
 	}
-	msg := err.Error()
-	// Neither the canonical path nor the parent dir may appear in the
-	// wrapped error. The temp-file path has a random suffix so we
-	// assert the directory prefix's absence (which subsumes the temp
-	// path because os.CreateTemp(dir, ...) puts the file under dir).
-	for _, leak := range []string{target, dir} {
+	msg := wrapped.Error()
+
+	// Neither the temp-file nor the canonical path may appear in the
+	// wrapped message; the parent directory and the temp-file
+	// basename pattern are also forbidden because either alone would
+	// leak the on-disk layout to a log scrubber that can only
+	// substring-redact known strings.
+	for _, leak := range []string{tmp, canonical, dir, ".master.key."} {
 		if strings.Contains(msg, leak) {
 			t.Fatalf("error leaks path component %q: %q", leak, msg)
 		}
 	}
-	// The temp-file basename pattern is also forbidden; even if the
-	// directory is somehow stripped a bare ".master.key.<rand>"
-	// substring would still leak the on-disk layout.
-	if strings.Contains(msg, ".master.key.") {
-		t.Fatalf("error leaks temp-file pattern: %q", msg)
+
+	// The wrapped error MUST still surface the underlying syscall
+	// error so callers (and operators reading the scrubbed log
+	// line) can tell why the rename failed. errors.Is bridges
+	// across the %w wrap and across LinkError.Unwrap.
+	if !errors.Is(wrapped, syscall.EEXIST) {
+		t.Fatalf("errors.Is(wrapped, syscall.EEXIST) = false; wrapped = %v", wrapped)
 	}
 }
 
