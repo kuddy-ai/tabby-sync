@@ -1,5 +1,23 @@
 # Security Policy
 
+## 加密落库与 master key 备份
+
+配置 `content` 在落库前会用 AES-256-GCM 透明加密：每行的密钥通过
+HKDF-SHA256 从主密钥按用户派生，AAD 绑定 `(CryptoVersion, userID,
+configID)` 三元组，nonce 为 12 字节随机数。详细规范、信封字节布局、
+两种 master key provider（`file`/`env`）以及落地路径见
+[`docs/CRYPTO.md`](docs/CRYPTO.md)。
+
+master key 是恢复加密数据的唯一凭据，丢失即数据不可恢复，没有
+任何后备恢复通道。备份 master key 是运维责任：
+
+- 不要把 master key 和数据库放在同一个备份盘的同一个目录
+- 文件 provider 默认把 master key 写到 `${TABBY_SYNC_DATA_DIR}/master.key`，
+  权限 `0o600`，父目录 `0o700`
+- 环境变量 provider 通过 `TABBY_SYNC_MASTER_KEY`（64 位十六进制字符串）
+  注入；不要把这个值写入 shell 历史或 CI 日志
+- 第一次写入加密内容之前必须先备份 master key；轮换之后必须重新备份
+
 ## 安全原则
 
 本项目默认由 AI Coding Agent 辅助开发，因此安全策略同时覆盖代码安全、AI 误操作、供应链安全、CI/CD 权限安全和敏感信息保护。

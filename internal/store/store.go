@@ -157,3 +157,113 @@ type Store interface {
 	// or return the same terminal error.
 	Close() error
 }
+
+// CreateConfigPlaintextInput is the payload accepted by
+// [EncryptedStore.CreateConfigPlaintext]. Unlike [CreateConfigInput],
+// callers pass the configuration content as PLAINTEXT bytes; the
+// encrypted-store wrapper encrypts them before they reach the
+// underlying [Store].
+//
+// Content may be empty (resulting in a row whose ciphertext is just
+// the GCM authentication tag); LastUsedWithVersion may be empty,
+// which the underlying [Store] persists as SQL NULL.
+type CreateConfigPlaintextInput struct {
+	Name                string
+	Content             []byte
+	LastUsedWithVersion string
+}
+
+// UpdateConfigPlaintextPatch describes a partial update to a
+// configuration row at the plaintext layer.
+//
+// A nil pointer or a nil/empty byte slice means "do not change this
+// field". When Content is non-nil and non-empty, the encrypted-store
+// wrapper re-encrypts the supplied plaintext under the same
+// (userID, configID) AAD as the original write, generating a fresh
+// random nonce, and forwards both the ciphertext and the nonce to
+// the underlying [Store.UpdateConfig].
+type UpdateConfigPlaintextPatch struct {
+	Name                *string
+	Content             []byte
+	LastUsedWithVersion *string
+}
+
+// ConfigWithPlaintext mirrors [Config] but exposes the decrypted
+// configuration content directly, replacing the opaque
+// ContentCiphertext / ContentNonce pair surfaced by the underlying
+// [Store]. The encrypted-store wrapper produces this type from a
+// successful Decrypt; callers above the wrapper never see the
+// ciphertext or the nonce.
+//
+// Implementations MUST NOT log the Content bytes (per
+// docs/LOGGING_POLICY.md and AGENTS.md §7).
+type ConfigWithPlaintext struct {
+	ID                  int64
+	UserID              int64
+	Name                string
+	Content             []byte
+	LastUsedWithVersion string
+	CreatedAt           time.Time
+	ModifiedAt          time.Time
+}
+
+// EncryptedStore is the plaintext-shaped view of a [Store] that runs
+// the AES-256-GCM envelope on the way in and out.
+//
+// The wrapper-supplied implementation encrypts callers' plaintext
+// before forwarding it to the underlying [Store] and decrypts every
+// row it reads back. Decryption failures (wrong master key, tampered
+// row, cross-user/cross-config replays) surface as the bare
+// crypto.ErrDecrypt sentinel returned UNWRAPPED so callers can use
+// errors.Is(err, crypto.ErrDecrypt). The store package intentionally
+// does NOT import internal/crypto; the contract is documented here
+// instead so that the encrypted-store wrapper is the single seam
+// between the persistence layer and the cryptographic envelope.
+//
+// Implementations MUST NOT log row contents (plaintext, ciphertext,
+// or nonces) and MUST NOT include them in error messages.
+type EncryptedStore interface {
+	// CreateConfigPlaintext encrypts in.Content under the
+	// (masterKey, userID, assignedConfigID) tuple and inserts the
+	// resulting ciphertext+nonce pair via the underlying [Store],
+	// returning the persisted row with its plaintext re-attached.
+	// The wrapper assigns the configID by writing once with a
+	// placeholder AAD, reading the row back, and updating it in
+	// place with the canonical AAD; if that second write fails the
+	// wrapper deletes the orphaned row to avoid leaving an
+	// undecryptable record on disk.
+	CreateConfigPlaintext(ctx context.Context, userID int64, in CreateConfigPlaintextInput) (ConfigWithPlaintext, error)
+
+	// GetConfigPlaintext returns the row identified by configID IFF
+	// it is owned by userID, decrypted under the configured master
+	// key. Cross-user access (the row exists but belongs to another
+	// user) returns [ErrConfigNotFound]; a row that exists but
+	// cannot be opened under the supplied (userID, configID) AAD
+	// returns crypto.ErrDecrypt unwrapped.
+	GetConfigPlaintext(ctx context.Context, userID, configID int64) (ConfigWithPlaintext, error)
+
+	// ListConfigsByUserPlaintext returns every row owned by userID
+	// in ascending ID order, decrypted under the configured master
+	// key. The first decrypt failure aborts the iteration with
+	// crypto.ErrDecrypt unwrapped; the returned slice up to that
+	// point is discarded.
+	ListConfigsByUserPlaintext(ctx context.Context, userID int64) ([]ConfigWithPlaintext, error)
+
+	// UpdateConfigPlaintext applies the non-nil/non-empty fields of
+	// patch to the row identified by configID, IFF that row is
+	// owned by userID. When patch.Content is non-empty, the wrapper
+	// re-encrypts under the existing (userID, configID) AAD with a
+	// fresh random nonce. Cross-user access returns
+	// [ErrConfigNotFound]; a successful update returns the
+	// freshly-loaded row with its plaintext re-attached.
+	UpdateConfigPlaintext(ctx context.Context, userID, configID int64, patch UpdateConfigPlaintextPatch) (ConfigWithPlaintext, error)
+
+	// DeleteConfig removes the row identified by configID IFF it is
+	// owned by userID. The contract mirrors [Store.DeleteConfig];
+	// no encryption is involved.
+	DeleteConfig(ctx context.Context, userID, configID int64) error
+
+	// Close releases the underlying [Store] (and any wrapper-owned
+	// resources). It is safe to call more than once.
+	Close() error
+}

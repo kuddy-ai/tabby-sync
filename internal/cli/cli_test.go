@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -142,7 +143,7 @@ func TestRunServeMissingRequiredVar(t *testing.T) {
 func TestRunServeHappyPath(t *testing.T) {
 	t.Parallel()
 
-	const sentinelProvider = "env"
+	const sentinelProvider = "file"
 
 	sentinelDataDir := t.TempDir()
 
@@ -240,6 +241,230 @@ func TestRunServeHappyPath(t *testing.T) {
 	// it is the only operational signal that pins a non-empty load.
 	if !strings.Contains(logs, `"user_count":1`) {
 		t.Errorf("logs missing user_count=1 field:\n%s", logs)
+	}
+
+	// Issue #10: the master-key load emits exactly one structured
+	// "master key loaded" line carrying only the provider field.
+	if !strings.Contains(logs, `"msg":"master key loaded"`) {
+		t.Errorf("logs missing 'master key loaded' line:\n%s", logs)
+	}
+	if !strings.Contains(logs, `"provider":"file"`) {
+		t.Errorf("logs missing provider=file field:\n%s", logs)
+	}
+
+	// The master.key fixture must end up under cfg.DataDir at the
+	// canonical filename, with mode 0o600 and size MasterKeySize.
+	masterKeyPath := filepath.Join(sentinelDataDir, "master.key")
+	st, err := os.Stat(masterKeyPath)
+	if err != nil {
+		t.Fatalf("master.key not created: %v", err)
+	}
+	if st.Size() != 32 {
+		t.Errorf("master.key size = %d; want 32", st.Size())
+	}
+	if runtime.GOOS != "windows" {
+		if mode := st.Mode().Perm(); mode != 0o600 {
+			t.Errorf("master.key mode = %o; want 0o600", mode)
+		}
+	}
+
+	// Logs must not echo the master.key path verbatim.
+	if strings.Contains(logs, masterKeyPath) {
+		t.Errorf("logs leaked master.key path:\n%s", logs)
+	}
+
+	// And the auto-generated key bytes must not appear in any form
+	// (the provider does not let us pin the value, but we can at
+	// least assert the file's hex form is absent).
+	keyBytes, err := os.ReadFile(masterKeyPath)
+	if err != nil {
+		t.Fatalf("read master.key: %v", err)
+	}
+	keyHex := hex.EncodeToString(keyBytes)
+	if strings.Contains(logs, keyHex) {
+		t.Errorf("logs leaked master key hex:\n%s", logs)
+	}
+}
+
+func TestRunServeEnvProviderHappyPath(t *testing.T) {
+	// NOTE: this test mutates the process env via t.Setenv (the env
+	// provider falls through to os.Getenv at Load time when
+	// LoadFromConfig is called) so it does NOT call t.Parallel(). The
+	// other tests in this file remain parallel.
+
+	const sentinelProvider = "env"
+
+	sentinelDataDir := t.TempDir()
+	usersDir := t.TempDir()
+	sentinelUsersFile := filepath.Join(usersDir, "users.yml")
+	tokenHash := func(s string) string {
+		sum := sha256.Sum256([]byte(s))
+		return hex.EncodeToString(sum[:])
+	}("alice-token")
+	usersYAML := "users:\n" +
+		"  - id: 1\n" +
+		"    name: alice\n" +
+		"    token_prefix: tbs_test01\n" +
+		"    token_hash: " + tokenHash + "\n" +
+		"    disabled: false\n"
+	if err := os.WriteFile(sentinelUsersFile, []byte(usersYAML), 0o600); err != nil {
+		t.Fatalf("seed users.yml: %v", err)
+	}
+
+	// Deterministic 32-byte master key so the test can assert the
+	// hex form does NOT appear in captured logs (negative-control
+	// sentinel substring).
+	masterKeyBytes := bytes.Repeat([]byte{0xAB}, 32)
+	masterKeyHex := hex.EncodeToString(masterKeyBytes)
+	t.Setenv("TABBY_SYNC_MASTER_KEY", masterKeyHex)
+
+	env := map[string]string{
+		config.EnvAddr:              "127.0.0.1:0",
+		config.EnvDataDir:           sentinelDataDir,
+		config.EnvUsersFile:         sentinelUsersFile,
+		config.EnvMasterKeyProvider: sentinelProvider,
+		config.EnvLogLevel:          "info",
+	}
+
+	var stdout bytes.Buffer
+	stderr := &safeBuffer{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan int, 1)
+	go func() {
+		done <- cli.Run(ctx, []string{"tabby-sync", "serve"}, fakeEnv(env), &stdout, stderr)
+	}()
+
+	if !waitForLog(stderr, `"msg":"tabby-sync ready"`, 3*time.Second) {
+		cancel()
+		<-done
+		t.Fatalf("timed out waiting for ready log; stderr so far:\n%s", stderr.String())
+	}
+
+	cancel()
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Errorf("exit code = %d; want 0", code)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("Run did not return within 3s after ctx cancel; stderr:\n%s", stderr.String())
+	}
+
+	logs := stderr.String()
+	if !strings.Contains(logs, `"msg":"master key loaded"`) {
+		t.Errorf("logs missing 'master key loaded' line:\n%s", logs)
+	}
+	if !strings.Contains(logs, `"provider":"env"`) {
+		t.Errorf("logs missing provider=env field:\n%s", logs)
+	}
+	// The master-key hex value must NOT appear anywhere in the logs.
+	if strings.Contains(logs, masterKeyHex) {
+		t.Errorf("logs leaked master key hex:\n%s", logs)
+	}
+	// And the auto-generation path must NOT have created an on-disk
+	// master.key under cfg.DataDir when the env provider is selected.
+	if _, err := os.Stat(filepath.Join(sentinelDataDir, "master.key")); !os.IsNotExist(err) {
+		t.Errorf("env provider should not auto-generate on disk; stat err = %v", err)
+	}
+}
+
+// TestRunServeMasterKeyWrongLength seeds a deliberately short
+// master.key file under cfg.DataDir and asserts the master-key load
+// fails with a redacted error: exit code 1, the structured failure
+// message is present with provider=file, the master.key path is
+// absent verbatim, and no other suspicious substring (the seeded
+// key bytes, the data-dir path, the parent directory of the
+// fixture) leaks. The keys package returns the bare
+// keys.ErrInvalidLength sentinel for a wrong-length file (no path
+// is wrapped in that error path), so the cli-layer scrubPaths pass
+// is a no-op and the "<redacted>" marker is NOT guaranteed to
+// appear; the no-leak contract is therefore enforced as
+// path-absence + suspicious-substring-absence rather than as
+// "<redacted>" presence.
+func TestRunServeMasterKeyWrongLength(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+
+	// Seed a 31-byte master.key so the file provider's length check
+	// trips on first read.
+	masterKeyPath := filepath.Join(dataDir, "master.key")
+	seededKey := bytes.Repeat([]byte{0xAB}, 31)
+	if err := os.WriteFile(masterKeyPath, seededKey, 0o600); err != nil {
+		t.Fatalf("seed short master.key: %v", err)
+	}
+
+	usersDir := t.TempDir()
+	usersFile := filepath.Join(usersDir, "users.yml")
+	tokenHash := func(s string) string {
+		sum := sha256.Sum256([]byte(s))
+		return hex.EncodeToString(sum[:])
+	}("alice-token")
+	usersYAML := "users:\n" +
+		"  - id: 1\n" +
+		"    name: alice\n" +
+		"    token_prefix: tbs_test01\n" +
+		"    token_hash: " + tokenHash + "\n" +
+		"    disabled: false\n"
+	if err := os.WriteFile(usersFile, []byte(usersYAML), 0o600); err != nil {
+		t.Fatalf("seed users.yml: %v", err)
+	}
+
+	env := map[string]string{
+		config.EnvAddr:              "127.0.0.1:0",
+		config.EnvDataDir:           dataDir,
+		config.EnvUsersFile:         usersFile,
+		config.EnvMasterKeyProvider: "file",
+		config.EnvLogLevel:          "info",
+	}
+
+	var stdout bytes.Buffer
+	stderr := &safeBuffer{}
+
+	code := cli.Run(context.Background(), []string{"tabby-sync", "serve"}, fakeEnv(env), &stdout, stderr)
+	if code != 1 {
+		t.Errorf("exit code = %d; want 1", code)
+	}
+
+	logs := stderr.String()
+	if !strings.Contains(logs, `"msg":"failed to load master key"`) {
+		t.Errorf("logs missing 'failed to load master key' message:\n%s", logs)
+	}
+	if !strings.Contains(logs, `"provider":"file"`) {
+		t.Errorf("logs missing provider=file field:\n%s", logs)
+	}
+
+	// v1 review issue #6 for #10: tighten the no-leak assertion. The
+	// previous shape softened the redaction check with t.Logf, which
+	// meant a regression that started leaking the data-dir path or
+	// the seeded key bytes (without also leaking masterKeyPath
+	// verbatim) would silently slip through. The contract now is:
+	// path-absence (authoritative) AND no other suspicious substring,
+	// where "<redacted>" presence is asserted only when the wrapped
+	// error actually had something to redact.
+	leakedSubstrings := map[string]string{
+		"master.key path":         masterKeyPath,
+		"data-dir path":           dataDir,
+		"users-file path":         usersFile,
+		"users-file parent dir":   usersDir,
+		"seeded master-key (hex)": hex.EncodeToString(seededKey),
+		"master.key basename":     filepath.Base(masterKeyPath),
+		"users.yml basename":      filepath.Base(usersFile),
+	}
+	for label, needle := range leakedSubstrings {
+		// filepath.Base of "master.key" / "users.yml" are common
+		// dictionary words on disk but the captured logs are JSON
+		// and a regression that leaked the basename would surface
+		// as a quoted string field; the substring search is good
+		// enough to catch that without false positives because the
+		// happy-path log fields use "<set>" / "<redacted>" /
+		// "<unset>" placeholders, never the bare basename.
+		if strings.Contains(logs, needle) {
+			t.Errorf("logs leaked %s (%q):\n%s", label, needle, logs)
+		}
 	}
 }
 
