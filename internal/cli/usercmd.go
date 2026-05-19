@@ -199,12 +199,27 @@ func runUserAdd(args []string, getenv func(string) string, stdout, stderr io.Wri
 }
 
 // runUserRm implements `tabby-sync user rm <name|id>`.
+// Pass --force to skip the confirmation prompt.
 func runUserRm(args []string, getenv func(string) string, stdout, stderr io.Writer) int {
 	if len(args) < 4 {
-		fmt.Fprintln(stderr, "Usage: tabby-sync user rm <name|id>")
+		fmt.Fprintln(stderr, "Usage: tabby-sync user rm [--force] <name|id>")
 		return 2
 	}
-	target := strings.TrimSpace(args[3])
+
+	// Parse --force flag.
+	force := false
+	target := ""
+	for _, arg := range args[3:] {
+		if arg == "--force" || arg == "-f" {
+			force = true
+		} else if target == "" {
+			target = strings.TrimSpace(arg)
+		}
+	}
+	if target == "" {
+		fmt.Fprintln(stderr, "Usage: tabby-sync user rm [--force] <name|id>")
+		return 2
+	}
 
 	usersFile := resolveUsersFile(getenv)
 	if usersFile == "" {
@@ -225,6 +240,18 @@ func runUserRm(args []string, getenv func(string) string, stdout, stderr io.Writ
 	}
 
 	removed := schema.Users[idx]
+
+	if !force {
+		fmt.Fprintf(stdout, "about to remove user %s (id=%d). This cannot be undone.\n", removed.Name, removed.ID)
+		fmt.Fprint(stdout, "Continue? [y/N] ")
+		var answer string
+		fmt.Fscanln(os.Stdin, &answer)
+		if strings.ToLower(strings.TrimSpace(answer)) != "y" {
+			fmt.Fprintln(stdout, "aborted.")
+			return 0
+		}
+	}
+
 	schema.Users = append(schema.Users[:idx], schema.Users[idx+1:]...)
 
 	if err := saveUsersYAML(usersFile, schema); err != nil {
@@ -357,8 +384,8 @@ func runDoctor(args []string, getenv func(string) string, stdout, stderr io.Writ
 		if envKey == "" {
 			fmt.Fprintln(stdout, "  [FAIL] TABBY_SYNC_MASTER_KEY is not set (provider=env)")
 			issues++
-		} else if len(envKey) != 64 {
-			fmt.Fprintf(stdout, "  [FAIL] TABBY_SYNC_MASTER_KEY has wrong length (want 64 hex chars)\n")
+		} else if len(envKey) != keys.MasterKeySize*2 {
+			fmt.Fprintf(stdout, "  [FAIL] TABBY_SYNC_MASTER_KEY has wrong length (want %d hex chars)\n", keys.MasterKeySize*2)
 			issues++
 		} else {
 			fmt.Fprintln(stdout, "  [OK]   master key env var is set with correct length")
@@ -419,8 +446,15 @@ func saveUsersYAML(path string, schema *usersFileSchema) error {
 	if err != nil {
 		return fmt.Errorf("cannot marshal users file: %w", err)
 	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	// Atomic write: write to temp file then rename, so a crash mid-write
+	// does not corrupt the existing users.yml.
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return fmt.Errorf("cannot write users file: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("cannot rename users file: %w", err)
 	}
 	return nil
 }
