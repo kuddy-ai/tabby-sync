@@ -12,8 +12,32 @@ permissions:
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    outputs:
+      pr: ${{ steps.rp.outputs.pr }}
+      pr_number: ${{ steps.rp.outputs.prs_created && fromJSON(steps.rp.outputs.prs_created)[0].number || '' }}
     steps:
-      - uses: googleapis/release-please-action@v4
+      - id: rp
+        uses: googleapis/release-please-action@v4
         with:
           config-file: .github/release-please-config.json
           manifest-file: .github/release-please-manifest.json
+
+  auto-merge:
+    needs: release-please
+    if: needs.release-please.outputs.pr_number != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Approve release PR
+        uses: hmarr/auto-approve-action@v4
+        with:
+          pull-request-number: ${{ needs.release-please.outputs.pr_number }}
+
+      - name: Merge release PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # Try --auto first (waits for required checks if branch protection
+        # is configured); fall back to direct merge for repos without
+        # required status checks.
+        run: |
+          gh pr merge ${{ needs.release-please.outputs.pr_number }} --auto --squash --repo ${{ github.repository }} \
+            || gh pr merge ${{ needs.release-please.outputs.pr_number }} --squash --repo ${{ github.repository }}
