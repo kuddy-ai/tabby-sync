@@ -433,6 +433,59 @@ func TestPatchPartialUpdates(t *testing.T) {
 	}
 }
 
+// TestPatchContentEmptyClearsRow pins the documented contract that
+// PATCH {"content": ""} actually clears the row's plaintext under a
+// fresh nonce instead of being silently a no-op. v1 semantic review
+// issue #1 for #8 + #9 flagged the prior wrapper signal
+// (`len(patch.Content) > 0`) as conflating nil and an explicit empty
+// slice; the fix promotes the patch field to *[]byte and forwards a
+// non-nil pointer when the JSON `content` field is present, even
+// when its value is the empty string. The test asserts both: the
+// PATCH response carries content="" and the next GET returns "".
+func TestPatchContentEmptyClearsRow(t *testing.T) {
+	t.Parallel()
+
+	ts := newTestServer(t)
+	_, body := doRequest(t, ts, http.MethodPost, "/api/1/configs", ts.userAToken, map[string]string{"name": "primary"})
+	created := decodeAs[configResp](t, body)
+	idPath := "/api/1/configs/" + strconv.FormatInt(created.ID, 10)
+
+	// Seed a non-empty content so the empty-string PATCH has
+	// something to clear; do this via a dedicated PATCH so the test
+	// keeps observing the wire-level content="" round-trip rather
+	// than relying on the empty-create default.
+	resp, body := doRequest(t, ts, http.MethodPatch, idPath, ts.userAToken,
+		map[string]string{"content": "settings:\n  before: 1\n"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("seed PATCH status = %d; want 200; body=%s", resp.StatusCode, body)
+	}
+	seeded := decodeAs[configResp](t, body)
+	if seeded.Content != "settings:\n  before: 1\n" {
+		t.Fatalf("seed PATCH content = %q; want non-empty fixture", seeded.Content)
+	}
+
+	// Now PATCH {"content": ""} and assert the response carries an
+	// empty content string. A regression that re-introduces the
+	// `len(patch.Content) > 0` short-circuit would echo the prior
+	// "settings:\n  before: 1\n" value here.
+	resp, body = doRequest(t, ts, http.MethodPatch, idPath, ts.userAToken,
+		map[string]string{"content": ""})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("clear PATCH status = %d; want 200; body=%s", resp.StatusCode, body)
+	}
+	patched := decodeAs[configResp](t, body)
+	if patched.Content != "" {
+		t.Errorf("PATCH content=\"\" returned content = %q; want empty", patched.Content)
+	}
+
+	// And confirm GET sees the cleared value too.
+	_, body = doRequest(t, ts, http.MethodGet, idPath, ts.userAToken, nil)
+	got := decodeAs[configResp](t, body)
+	if got.Content != "" {
+		t.Errorf("GET-after-clear content = %q; want empty", got.Content)
+	}
+}
+
 func TestPatchBumpsModifiedAtRapidly(t *testing.T) {
 	t.Parallel()
 

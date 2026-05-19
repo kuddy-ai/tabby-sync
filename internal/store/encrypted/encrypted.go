@@ -213,17 +213,19 @@ func (s *Store) ListConfigsByUserPlaintext(ctx context.Context, userID int64) ([
 }
 
 // UpdateConfigPlaintext applies the non-nil/non-empty fields of patch
-// to the row identified by configID. When patch.Content is non-empty
+// to the row identified by configID. When patch.Content is non-nil
 // the wrapper re-encrypts under the same (userID, configID) AAD with
-// a fresh random nonce. The freshly-loaded row is returned with its
-// plaintext re-attached.
+// a fresh random nonce; a non-nil pointer to an empty slice is a
+// valid plaintext (the resulting ciphertext is just the GCM auth
+// tag) and is NOT treated as a no-op. The freshly-loaded row is
+// returned with its plaintext re-attached.
 func (s *Store) UpdateConfigPlaintext(ctx context.Context, userID, configID int64, patch store.UpdateConfigPlaintextPatch) (store.ConfigWithPlaintext, error) {
 	innerPatch := store.UpdateConfigPatch{
 		Name:                patch.Name,
 		LastUsedWithVersion: patch.LastUsedWithVersion,
 	}
-	if len(patch.Content) > 0 {
-		ct, nonce, err := crypto.Encrypt(s.masterKey, userID, configID, patch.Content)
+	if patch.Content != nil {
+		ct, nonce, err := crypto.Encrypt(s.masterKey, userID, configID, *patch.Content)
 		if err != nil {
 			return store.ConfigWithPlaintext{}, fmt.Errorf("encrypted: encrypt update: %w", err)
 		}

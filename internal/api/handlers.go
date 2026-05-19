@@ -135,10 +135,12 @@ func (h *handlers) handleCreateConfig(w http.ResponseWriter, r *http.Request) {
 // `last_used_with_version: ""` clears the field on disk (the store
 // collapses "" and SQL NULL into a single state).
 //
-// The wrapper's UpdateConfigPlaintext re-encrypts when Content is
-// non-nil, even when *Content == "" (an empty plaintext is a valid
-// envelope payload), so the handler maps `*Content` to a possibly
-// empty []byte without further guarding.
+// The wrapper's UpdateConfigPlaintext re-encrypts when patch.Content
+// is non-nil, even when the dereferenced slice is empty; the handler
+// therefore allocates a (possibly empty) []byte from `*req.Content`
+// and forwards a non-nil pointer so `PATCH {"content": ""}` clears
+// the row's plaintext under a fresh nonce instead of being a silent
+// no-op. Addresses v1 semantic review issue #1 for #8 + #9.
 func (h *handlers) handlePatchConfig(w http.ResponseWriter, r *http.Request) {
 	u, ok := h.currentUser(w, r)
 	if !ok {
@@ -161,10 +163,12 @@ func (h *handlers) handlePatchConfig(w http.ResponseWriter, r *http.Request) {
 		LastUsedWithVersion: req.LastUsedWithVersion,
 	}
 	if req.Content != nil {
-		// Non-nil pointer: set the (possibly empty) plaintext. The
-		// wrapper accepts empty content; when *req.Content == "" the
-		// resulting ciphertext is just the GCM auth tag.
-		patch.Content = []byte(*req.Content)
+		// Forward a non-nil pointer (possibly to an empty slice) so
+		// the wrapper re-encrypts under a fresh nonce. An empty
+		// plaintext is a valid envelope payload: the resulting
+		// ciphertext is just the GCM auth tag.
+		b := []byte(*req.Content)
+		patch.Content = &b
 	}
 	row, err := h.encStore.UpdateConfigPlaintext(r.Context(), u.ID, id, patch)
 	if err != nil {
