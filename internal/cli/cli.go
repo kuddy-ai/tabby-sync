@@ -1,0 +1,138 @@
+// Package cli implements the tabby-sync command-line dispatcher. It is the
+// only place outside of cmd/tabby-sync/main.go that knows how to translate
+// argv into a process exit code, and it is the only place that wires
+// configuration loading, signal handling, structured logging, and the HTTP
+// server lifecycle together.
+package cli
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+
+	"github.com/kuddy-ai/tabby-sync/internal/config"
+	"github.com/kuddy-ai/tabby-sync/internal/server"
+	"github.com/kuddy-ai/tabby-sync/internal/version"
+)
+
+const usage = `Usage: tabby-sync <command>
+
+Commands:
+  serve     Start the tabby-sync HTTP server
+  version   Print version information and exit
+  help      Show this message
+
+Environment variables (see docs/):
+  TABBY_SYNC_ADDR                 Listen address (default :8080)
+  TABBY_SYNC_DATA_DIR             Required: data directory
+  TABBY_SYNC_USERS_FILE           Required: users credentials file
+  TABBY_SYNC_MASTER_KEY_PROVIDER  Required: one of env|file
+  APP_LOG_LEVEL                   error|warn|info|debug (default info)
+`
+
+// Run dispatches the tabby-sync subcommand named by args and returns a
+// process exit code. args is expected to be the full os.Args slice (i.e.
+// args[0] is the program name). The getenv callback supplies environment
+// values to config.Load so tests can inject a fake env.
+//
+// Run does not call os.Exit; cmd/tabby-sync/main.go does.
+func Run(ctx context.Context, args []string, getenv func(string) string, stdout, stderr io.Writer) int {
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+
+	cmd := ""
+	if len(args) >= 2 {
+		cmd = args[1]
+	}
+
+	switch cmd {
+	case "", "help", "-h", "--help":
+		fmt.Fprint(stdout, usage)
+		return 0
+	case "version":
+		fmt.Fprintln(stdout, version.Info())
+		return 0
+	case "serve":
+		return runServe(ctx, getenv, stderr)
+	default:
+		fmt.Fprintf(stderr, "unknown command: %s\n", cmd)
+		fmt.Fprint(stderr, usage)
+		return 2
+	}
+}
+
+// runServe loads configuration, builds the HTTP server, and blocks until the
+// supplied context is canceled or a SIGINT/SIGTERM is received.
+func runServe(ctx context.Context, getenv func(string) string, stderr io.Writer) int {
+	cfg, err := config.Load(getenv)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %s\n", err.Error())
+		return 2
+	}
+
+	logger := slog.New(slog.NewJSONHandler(stderr, &slog.HandlerOptions{
+		Level: parseLogLevel(cfg.LogLevel),
+	}))
+
+	// Bind the listener up front so we can report the actual port and so we
+	// fail fast (with a clear error) before spinning up goroutines.
+	ln, err := net.Listen("tcp", cfg.Addr)
+	if err != nil {
+		// cfg.Addr is non-sensitive so it is safe to mention in the log.
+		logger.Error("failed to bind listener", slog.String("addr", cfg.Addr), slog.String("err", err.Error()))
+		return 1
+	}
+
+	logger.Info(
+		"starting tabby-sync",
+		slog.String("version", version.Version),
+		slog.String("commit", version.Commit),
+		slog.String("addr", cfg.Addr),
+		slog.String("config", cfg.String()),
+	)
+
+	srv := server.New(cfg, logger)
+
+	signalCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	logger.Info("tabby-sync ready", slog.String("listen", ln.Addr().String()))
+
+	if err := server.Run(signalCtx, srv, ln, logger); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			logger.Warn("tabby-sync shutdown timed out, forcing close", slog.String("err", err.Error()))
+			return 1
+		}
+		logger.Error("tabby-sync exited with error", slog.String("err", err.Error()))
+		return 1
+	}
+
+	logger.Info("tabby-sync stopped")
+	return 0
+}
+
+// parseLogLevel maps a config log-level string to a slog.Level. config.Load
+// already validates that the string is one of error/warn/info/debug, so the
+// default branch is defensive only.
+func parseLogLevel(s string) slog.Level {
+	switch strings.ToLower(s) {
+	case "error":
+		return slog.LevelError
+	case "warn":
+		return slog.LevelWarn
+	case "debug":
+		return slog.LevelDebug
+	case "info":
+		return slog.LevelInfo
+	default:
+		return slog.LevelInfo
+	}
+}
