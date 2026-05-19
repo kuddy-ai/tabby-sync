@@ -11,7 +11,9 @@
   "packages": {
     ".": {
       "release-type": "go",
-      "component": "tabby-sync"
+      "component": "tabby-sync",
+      "include-v-in-tag": false,
+      "release-name-template": "$RESOLVED_VERSION"
     }
   }
 }
