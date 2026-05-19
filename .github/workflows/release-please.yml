@@ -47,4 +47,4 @@ jobs:
             echo "No release PR number found, skipping auto-merge."
             exit 0
           fi
-          gh pr merge "$pr_number" --rebase --auto --delete-branch
+          gh pr merge "$pr_number" --squash --auto --delete-branch
