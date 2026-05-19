@@ -1,0 +1,17 @@
+{
+  "changelog-sections": [
+    { "type": "feat", "section": "Features" },
+    { "type": "fix", "section": "Bug Fixes" },
+    { "type": "perf", "section": "Performance" },
+    { "type": "security", "section": "Security" },
+    { "type": "deps", "section": "Dependencies" },
+    { "type": "chore", "section": "Maintenance" },
+    { "type": "docs", "section": "Documentation" }
+  ],
+  "packages": {
+    ".": {
+      "release-type": "go",
+      "component": "tabby-sync"
+    }
+  }
+}
