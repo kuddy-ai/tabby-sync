@@ -13,6 +13,7 @@
       "release-type": "go",
       "component": "tabby-sync",
       "include-v-in-tag": false,
+      "include-component-in-tag": false,
       "release-name-template": "$RESOLVED_VERSION"
     }
   }
