@@ -36,15 +36,23 @@ const (
 )
 
 // New builds an *http.Server bound to cfg.Addr with sane timeouts and a
-// minimal mux that serves only GET /healthz. The provided logger is not
-// retained on the server; it is only used to attach an ErrorLog wrapper so
-// http.Server's own diagnostics flow through slog.
+// mux that serves GET /healthz plus, when apiHandler is non-nil, every
+// route registered by [internal/api.New] under the /api/1/ prefix. The
+// provided logger is not retained on the server; it is only used to
+// attach an ErrorLog wrapper so http.Server's own diagnostics flow
+// through slog.
 //
-// authMW is the application-level authentication middleware. Passing nil
-// is equivalent to passing [auth.None]; this preserves the contract that
-// New always returns a runnable server and lets existing tests keep
-// constructing one without an authenticator.
-func New(cfg *config.Config, logger *slog.Logger, authMW auth.Middleware) *http.Server {
+// authMW is the application-level authentication middleware. Passing
+// nil is equivalent to passing [auth.None]; this preserves the
+// contract that New always returns a runnable server and lets existing
+// tests keep constructing one without an authenticator.
+//
+// apiHandler is mounted under the literal /api/1/ prefix when non-nil
+// so the route-aware auth middleware automatically gates every
+// /api/1/* request. Tests that do not exercise the API may pass nil;
+// /healthz keeps working in that mode and any /api/1/* request falls
+// through to the mux's 404 (still after the auth middleware).
+func New(cfg *config.Config, logger *slog.Logger, authMW auth.Middleware, apiHandler http.Handler) *http.Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -54,6 +62,9 @@ func New(cfg *config.Config, logger *slog.Logger, authMW auth.Middleware) *http.
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz)
+	if apiHandler != nil {
+		mux.Handle("/api/1/", apiHandler)
+	}
 
 	return &http.Server{
 		Addr:              cfg.Addr,

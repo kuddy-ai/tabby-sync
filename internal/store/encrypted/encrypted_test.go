@@ -273,7 +273,7 @@ func TestUpdateReencrypts(t *testing.T) {
 
 	newPT := []byte("new-payload-also-secret")
 	updated, err := w.UpdateConfigPlaintext(ctx, 1, created.ID, store.UpdateConfigPlaintextPatch{
-		Content: newPT,
+		Content: &newPT,
 	})
 	if err != nil {
 		t.Fatalf("Update: %v", err)
@@ -291,6 +291,107 @@ func TestUpdateReencrypts(t *testing.T) {
 	}
 	if bytes.Contains(afterCT, newPT) {
 		t.Error("post-update ciphertext contains new plaintext as substring")
+	}
+}
+
+// TestUpdateContentEmptyReencrypts pins the documented contract that
+// a non-nil pointer to an empty slice re-encrypts the row to the
+// empty plaintext (the resulting ciphertext is just the GCM auth
+// tag) instead of being silently a no-op. v1 semantic review issue
+// #1 for #8 + #9 flagged the prior `len(patch.Content) > 0` signal
+// as conflating nil and an explicit empty slice; the fix promotes
+// Content to *[]byte so the empty-plaintext path is exercisable
+// from the API. The test asserts both the post-decrypt round-trip
+// (Get returns []byte("") for the empty content) and the
+// side-channel invariant that the on-disk ciphertext and nonce
+// changed (a fresh nonce was used and the GCM tag was re-computed).
+func TestUpdateContentEmptyReencrypts(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	w, dbPath := newWrapper(t)
+	created, err := w.CreateConfigPlaintext(ctx, 1, store.CreateConfigPlaintextInput{
+		Name:    "clear-target",
+		Content: plaintextSentinel,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	db := inspect(t, dbPath)
+	beforeCT, beforeNonce := readRowBytes(t, db, created.ID)
+
+	empty := []byte{}
+	updated, err := w.UpdateConfigPlaintext(ctx, 1, created.ID, store.UpdateConfigPlaintextPatch{
+		Content: &empty,
+	})
+	if err != nil {
+		t.Fatalf("Update (empty content): %v", err)
+	}
+	if len(updated.Content) != 0 {
+		t.Fatalf("Update returned content len = %d; want 0", len(updated.Content))
+	}
+
+	got, err := w.GetConfigPlaintext(ctx, 1, created.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(got.Content) != 0 {
+		t.Fatalf("Get returned content len = %d; want 0", len(got.Content))
+	}
+
+	afterCT, afterNonce := readRowBytes(t, db, created.ID)
+	if bytes.Equal(beforeCT, afterCT) {
+		t.Error("ciphertext unchanged after empty-content Update; the row was not re-encrypted")
+	}
+	if bytes.Equal(beforeNonce, afterNonce) {
+		t.Error("nonce unchanged after empty-content Update; a fresh nonce should have been generated")
+	}
+}
+
+// TestUpdateContentNilIsNoOp pins the symmetric contract: a nil
+// Content pointer (the JSON field was absent) leaves the row's
+// ciphertext and nonce untouched. Together with
+// TestUpdateContentEmptyReencrypts this fixes the
+// nil-vs-empty-slice ambiguity flagged by v1 semantic review issue
+// #1 for #8 + #9.
+func TestUpdateContentNilIsNoOp(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	w, dbPath := newWrapper(t)
+	created, err := w.CreateConfigPlaintext(ctx, 1, store.CreateConfigPlaintextInput{
+		Name:    "noop-target",
+		Content: plaintextSentinel,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	db := inspect(t, dbPath)
+	beforeCT, beforeNonce := readRowBytes(t, db, created.ID)
+
+	renamed := "renamed"
+	if _, err := w.UpdateConfigPlaintext(ctx, 1, created.ID, store.UpdateConfigPlaintextPatch{
+		Name: &renamed,
+	}); err != nil {
+		t.Fatalf("Update (rename only): %v", err)
+	}
+
+	got, err := w.GetConfigPlaintext(ctx, 1, created.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !bytes.Equal(got.Content, plaintextSentinel) {
+		t.Fatalf("Get content = %q; want %q (rename-only patch must not touch content)", got.Content, plaintextSentinel)
+	}
+
+	afterCT, afterNonce := readRowBytes(t, db, created.ID)
+	if !bytes.Equal(beforeCT, afterCT) {
+		t.Error("ciphertext changed after rename-only Update; nil Content must be a no-op")
+	}
+	if !bytes.Equal(beforeNonce, afterNonce) {
+		t.Error("nonce changed after rename-only Update; nil Content must be a no-op")
 	}
 }
 

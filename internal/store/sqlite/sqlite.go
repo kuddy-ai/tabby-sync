@@ -96,7 +96,20 @@ func Open(ctx context.Context, dbPath string) (*Store, error) {
 	dsn := dbPath + "?_pragma=journal_mode(WAL)" +
 		"&_pragma=foreign_keys(ON)" +
 		"&_pragma=busy_timeout(5000)" +
-		"&_pragma=synchronous(NORMAL)"
+		"&_pragma=synchronous(NORMAL)" +
+		// _txlock=immediate makes every BeginTx in this package
+		// emit `BEGIN IMMEDIATE` (instead of the SQLite default
+		// `BEGIN DEFERRED`) so the write lock is taken up-front
+		// and the SELECT-of-modified_at + UPDATE in UpdateConfig
+		// cannot race a concurrent writer slipping a new
+		// modified_at between the read and the write. modernc.org/sqlite
+		// silently ignores sql.TxOptions.Isolation, so the DSN-level
+		// option is the only way to control begin mode; see
+		// modernc.org/sqlite/sqlite.go's _txlock parser. Pinning
+		// it here also keeps the contract honest if the
+		// MaxOpenConns=1 serialisation below is ever relaxed.
+		// Addresses v1 semantic review issue #2 for #8 + #9.
+		"&_txlock=immediate"
 
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -217,12 +230,25 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-// nowRFC3339Nano returns time.Now in UTC formatted as RFC3339Nano. It is
-// extracted so tests and the migrations runner produce identical
+// nowFn is the clock seam every write path in this package routes
+// through. Tests in package sqlite_test swap it for the duration of a
+// single test via the in-package helper SetClockForTest in
+// export_test.go; production code never reassigns it. Centralising the
+// clock here means CreateConfig and UpdateConfig agree on a single
+// source of "now", which the strictly-monotonic modified_at contract in
+// UpdateConfig depends on (a backwards clock skew falls back to
+// old + 1ms only when the seam returns a time at or before the row's
+// existing modified_at).
+var nowFn func() time.Time = time.Now
+
+// nowRFC3339Nano returns nowFn() in UTC formatted as RFC3339Nano. It is
+// extracted so the migrations runner and CreateConfig produce identical
 // timestamps and so the format can be changed in one place if the
-// schema ever evolves.
+// schema ever evolves. UpdateConfig formats its own timestamp directly
+// (it needs the parsed time.Time value to compute old + 1ms) and so
+// does not call this helper.
 func nowRFC3339Nano() string {
-	return time.Now().UTC().Format(time.RFC3339Nano)
+	return nowFn().UTC().Format(time.RFC3339Nano)
 }
 
 // CreateConfig inserts a new row owned by userID and returns it.
@@ -320,17 +346,69 @@ func (s *Store) ListConfigsByUser(ctx context.Context, userID int64) ([]store.Co
 // ContentCiphertext / ContentNonce is set is reported as
 // [store.ErrInvalidPatch] and the row is left untouched.
 //
-// ModifiedAt is bumped to "now" on every successful update, even if no
-// other column changed value.
+// ModifiedAt is bumped on every successful update, even if no other
+// column changed value, AND is strictly greater than the row's prior
+// ModifiedAt: the new value is computed as max(now, old + 1ms) inside
+// a single BEGIN IMMEDIATE transaction so successive rapid updates
+// always strictly advance, and so a backwards-jumping wall clock
+// degrades gracefully to old + 1ms instead of writing a regressed
+// timestamp. Per-row monotonicity is required by issue #9 for clients
+// to safely diff-by-modified_at without losing edits.
 func (s *Store) UpdateConfig(ctx context.Context, userID, configID int64, patch store.UpdateConfigPatch) (store.Config, error) {
 	hasCipher := len(patch.ContentCiphertext) > 0
 	hasNonce := len(patch.ContentNonce) > 0
 	if hasCipher != hasNonce {
+		// Reject the patch BEFORE acquiring a write lock so an invalid
+		// patch never even opens a transaction.
 		return store.Config{}, fmt.Errorf("%w: ciphertext and nonce must be set together", store.ErrInvalidPatch)
 	}
 
+	// The Open DSN sets `_txlock=immediate` so this BeginTx emits
+	// `BEGIN IMMEDIATE`, which acquires the write lock up-front
+	// and keeps the SELECT-of-modified_at and the UPDATE on the
+	// same connection without giving any other writer a chance to
+	// slip a new modified_at between the read and the write.
+	// (modernc.org/sqlite silently ignores sql.TxOptions.Isolation,
+	// so passing sql.LevelSerializable here is decorative; the DSN
+	// option is what actually controls begin mode. The
+	// `MaxOpenConns=1` pool also serialises writers today, but the
+	// explicit IMMEDIATE keeps the contract self-evident if the
+	// pool is ever relaxed.) Addresses v1 semantic review issue
+	// #2 for #8 + #9.
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return store.Config{}, fmt.Errorf("sqlite: begin update tx: %w", err)
+	}
+	// Rollback is a no-op once Commit has succeeded (database/sql
+	// returns sql.ErrTxDone, which we deliberately ignore here).
+	defer func() { _ = tx.Rollback() }()
+
+	var oldModifiedAt string
+	if err := tx.QueryRowContext(ctx,
+		`SELECT modified_at FROM configs WHERE id = ? AND user_id = ?`,
+		configID, userID,
+	).Scan(&oldModifiedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return store.Config{}, store.ErrConfigNotFound
+		}
+		return store.Config{}, fmt.Errorf("sqlite: read modified_at: %w", err)
+	}
+	old, err := time.Parse(time.RFC3339Nano, oldModifiedAt)
+	if err != nil {
+		return store.Config{}, fmt.Errorf("sqlite: parse old modified_at: %w", err)
+	}
+
+	candidate := nowFn().UTC()
+	if !candidate.After(old) {
+		// Wall clock did not advance (or jumped backwards). Step
+		// strictly past the row's existing modified_at by exactly 1ms
+		// so subsequent reads still see strictly-monotonic timestamps.
+		candidate = old.Add(time.Millisecond)
+	}
+	newModifiedAt := candidate.Format(time.RFC3339Nano)
+
 	setClauses := []string{"modified_at = ?"}
-	args := []any{nowRFC3339Nano()}
+	args := []any{newModifiedAt}
 
 	if patch.Name != nil {
 		setClauses = append(setClauses, "name = ?")
@@ -349,17 +427,14 @@ func (s *Store) UpdateConfig(ctx context.Context, userID, configID int64, patch 
 
 	stmt := "UPDATE configs SET " + strings.Join(setClauses, ", ") + " WHERE id = ? AND user_id = ?"
 
-	res, err := s.db.ExecContext(ctx, stmt, args...)
-	if err != nil {
+	if _, err := tx.ExecContext(ctx, stmt, args...); err != nil {
 		return store.Config{}, fmt.Errorf("sqlite: update config: %w", err)
 	}
-	affected, err := res.RowsAffected()
-	if err != nil {
-		return store.Config{}, fmt.Errorf("sqlite: rows affected: %w", err)
+	if err := tx.Commit(); err != nil {
+		return store.Config{}, fmt.Errorf("sqlite: commit update: %w", err)
 	}
-	if affected == 0 {
-		return store.Config{}, store.ErrConfigNotFound
-	}
+	// Re-load via GetConfig outside the transaction; the new
+	// modified_at is already persisted, so a stale read is impossible.
 	return s.GetConfig(ctx, userID, configID)
 }
 

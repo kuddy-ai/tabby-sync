@@ -35,7 +35,7 @@ func newTestConfig() *config.Config {
 func TestHealthzHandler(t *testing.T) {
 	t.Parallel()
 
-	srv := server.New(newTestConfig(), quietLogger(), nil)
+	srv := server.New(newTestConfig(), quietLogger(), nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rr := httptest.NewRecorder()
@@ -56,7 +56,7 @@ func TestHealthzHandler(t *testing.T) {
 func TestHealthzDoesNotLeakMetadata(t *testing.T) {
 	t.Parallel()
 
-	srv := server.New(newTestConfig(), quietLogger(), nil)
+	srv := server.New(newTestConfig(), quietLogger(), nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rr := httptest.NewRecorder()
@@ -87,7 +87,7 @@ func TestHealthzDoesNotLeakMetadata(t *testing.T) {
 func TestHealthzCarriesSecurityHeadersAndRequestID(t *testing.T) {
 	t.Parallel()
 
-	srv := server.New(newTestConfig(), quietLogger(), nil)
+	srv := server.New(newTestConfig(), quietLogger(), nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rr := httptest.NewRecorder()
@@ -113,7 +113,7 @@ func TestHealthzCarriesSecurityHeadersAndRequestID(t *testing.T) {
 func TestServerRejectsOversizedBody(t *testing.T) {
 	t.Parallel()
 
-	srv := server.New(newTestConfig(), quietLogger(), nil)
+	srv := server.New(newTestConfig(), quietLogger(), nil, nil)
 
 	// Even though /healthz is registered as GET, MaxBodyBytes runs ahead of
 	// the mux so a POST with a 2 MiB body should be rejected with 413.
@@ -220,7 +220,7 @@ func TestPanic500IsObservedByAccessLog(t *testing.T) {
 func TestNewSetsTimeoutsAndHeaderCap(t *testing.T) {
 	t.Parallel()
 
-	srv := server.New(newTestConfig(), quietLogger(), nil)
+	srv := server.New(newTestConfig(), quietLogger(), nil, nil)
 	if srv.ReadHeaderTimeout <= 0 {
 		t.Errorf("ReadHeaderTimeout = %v; want > 0", srv.ReadHeaderTimeout)
 	}
@@ -241,7 +241,7 @@ func TestNewSetsTimeoutsAndHeaderCap(t *testing.T) {
 func TestRunGracefulShutdown(t *testing.T) {
 	t.Parallel()
 
-	srv := server.New(newTestConfig(), quietLogger(), nil)
+	srv := server.New(newTestConfig(), quietLogger(), nil, nil)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -292,7 +292,7 @@ func TestRunGracefulShutdown(t *testing.T) {
 func TestRunReturnsServeErrorImmediately(t *testing.T) {
 	t.Parallel()
 
-	srv := server.New(newTestConfig(), quietLogger(), nil)
+	srv := server.New(newTestConfig(), quietLogger(), nil, nil)
 
 	// Pre-close the listener so Serve returns net.ErrClosed without ever
 	// being canceled by ctx. Run must surface that error rather than block.
@@ -349,7 +349,7 @@ func alwaysUnauthorized(next http.Handler) http.Handler {
 func TestHealthzBypassesAuth(t *testing.T) {
 	t.Parallel()
 
-	srv := server.New(newTestConfig(), quietLogger(), alwaysUnauthorized)
+	srv := server.New(newTestConfig(), quietLogger(), alwaysUnauthorized, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rr := httptest.NewRecorder()
@@ -366,7 +366,7 @@ func TestHealthzBypassesAuth(t *testing.T) {
 func TestProtectedRouteRequiresAuth(t *testing.T) {
 	t.Parallel()
 
-	srv := server.New(newTestConfig(), quietLogger(), alwaysUnauthorized)
+	srv := server.New(newTestConfig(), quietLogger(), alwaysUnauthorized, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/unknown", nil)
 	rr := httptest.NewRecorder()
@@ -386,7 +386,7 @@ func TestHealthzWithTrailingSlashIsStillProtected(t *testing.T) {
 	// The bypass compares URL.Path to the literal "/healthz" so a
 	// /healthz/ or /healthz/extra request must still be gated by the
 	// auth middleware.
-	srv := server.New(newTestConfig(), quietLogger(), alwaysUnauthorized)
+	srv := server.New(newTestConfig(), quietLogger(), alwaysUnauthorized, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz/", nil)
 	rr := httptest.NewRecorder()
@@ -407,7 +407,7 @@ func TestHealthzWithTrailingSlashIsStillProtected(t *testing.T) {
 func TestHealthzWithNonGetMethodIsStillProtected(t *testing.T) {
 	t.Parallel()
 
-	srv := server.New(newTestConfig(), quietLogger(), alwaysUnauthorized)
+	srv := server.New(newTestConfig(), quietLogger(), alwaysUnauthorized, nil)
 
 	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch, http.MethodOptions} {
 		method := method
@@ -431,7 +431,7 @@ func TestHealthzWithNonGetMethodIsStillProtected(t *testing.T) {
 func TestHealthzHeadBypassesAuth(t *testing.T) {
 	t.Parallel()
 
-	srv := server.New(newTestConfig(), quietLogger(), alwaysUnauthorized)
+	srv := server.New(newTestConfig(), quietLogger(), alwaysUnauthorized, nil)
 
 	req := httptest.NewRequest(http.MethodHead, "/healthz", nil)
 	rr := httptest.NewRecorder()

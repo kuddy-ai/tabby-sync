@@ -176,15 +176,21 @@ type CreateConfigPlaintextInput struct {
 // UpdateConfigPlaintextPatch describes a partial update to a
 // configuration row at the plaintext layer.
 //
-// A nil pointer or a nil/empty byte slice means "do not change this
-// field". When Content is non-nil and non-empty, the encrypted-store
-// wrapper re-encrypts the supplied plaintext under the same
-// (userID, configID) AAD as the original write, generating a fresh
-// random nonce, and forwards both the ciphertext and the nonce to
-// the underlying [Store.UpdateConfig].
+// Every field is a pointer so the wrapper can distinguish "field
+// absent in the patch" (nil pointer, do not change) from "field
+// supplied with an empty value" (non-nil pointer to an empty
+// string / empty byte slice, set to empty). When Content is
+// non-nil the encrypted-store wrapper re-encrypts the supplied
+// plaintext under the same (userID, configID) AAD as the original
+// write, generating a fresh random nonce, and forwards both the
+// ciphertext and the nonce to the underlying [Store.UpdateConfig];
+// in particular Content = &[]byte{} re-encrypts the empty
+// plaintext (the resulting ciphertext is just the GCM auth tag)
+// instead of being a silent no-op. Addresses v1 semantic review
+// issue #1 for #8 + #9.
 type UpdateConfigPlaintextPatch struct {
 	Name                *string
-	Content             []byte
+	Content             *[]byte
 	LastUsedWithVersion *string
 }
 
@@ -251,11 +257,12 @@ type EncryptedStore interface {
 
 	// UpdateConfigPlaintext applies the non-nil/non-empty fields of
 	// patch to the row identified by configID, IFF that row is
-	// owned by userID. When patch.Content is non-empty, the wrapper
+	// owned by userID. When patch.Content is non-nil the wrapper
 	// re-encrypts under the existing (userID, configID) AAD with a
-	// fresh random nonce. Cross-user access returns
-	// [ErrConfigNotFound]; a successful update returns the
-	// freshly-loaded row with its plaintext re-attached.
+	// fresh random nonce; in particular Content = &[]byte{} stores
+	// the empty plaintext and is NOT treated as a no-op. Cross-user
+	// access returns [ErrConfigNotFound]; a successful update
+	// returns the freshly-loaded row with its plaintext re-attached.
 	UpdateConfigPlaintext(ctx context.Context, userID, configID int64, patch UpdateConfigPlaintextPatch) (ConfigWithPlaintext, error)
 
 	// DeleteConfig removes the row identified by configID IFF it is

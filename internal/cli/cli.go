@@ -19,6 +19,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/kuddy-ai/tabby-sync/internal/api"
 	"github.com/kuddy-ai/tabby-sync/internal/auth"
 	"github.com/kuddy-ai/tabby-sync/internal/config"
 	"github.com/kuddy-ai/tabby-sync/internal/keys"
@@ -175,11 +176,11 @@ func runServe(ctx context.Context, getenv func(string) string, stderr io.Writer)
 			logger.Error("failed to close encrypted store", slog.String("err", cerr.Error()))
 		}
 	}()
-	// FIXME(#8): plumb encStore into the API handlers in issue #8.
-	// Until then the wrapper is constructed (so the encryption boundary
-	// is real and exercised by tests) and Close()d on shutdown via the
-	// deferred call above, which keeps the variable live without an
-	// explicit `_ = encStore` reference.
+	// Construct the API handler around the encrypted-store wrapper
+	// and mount it on the server below. The wrapper is the single
+	// seam to the cryptographic envelope, so plaintext never leaves
+	// this scope on the way into the handlers or back out of them.
+	apiHandler := api.New(encStore, logger)
 
 	// Bind the listener up front so we can report the actual port and so we
 	// fail fast (with a clear error) before spinning up goroutines.
@@ -198,7 +199,7 @@ func runServe(ctx context.Context, getenv func(string) string, stderr io.Writer)
 		slog.String("config", cfg.String()),
 	)
 
-	srv := server.New(cfg, logger, authMW)
+	srv := server.New(cfg, logger, authMW, apiHandler)
 
 	signalCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()

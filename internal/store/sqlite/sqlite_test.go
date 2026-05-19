@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 
@@ -32,6 +33,13 @@ func strPtr(s string) *string { return &s }
 // under test was opened against, applying the same DSN pragmas the
 // production code uses. The tests use this to query sqlite_master and
 // PRAGMA values without reaching into the Store's unexported *sql.DB.
+//
+// _txlock is intentionally NOT mirrored on the inspection connection:
+// the production-side option only controls how BeginTx renders its
+// `BEGIN`, which is irrelevant to the read-only inspection queries
+// here. Keeping the inspection DSN narrow also prevents a future
+// regression that flips _txlock from quietly affecting any test that
+// uses this helper.
 func inspect(t *testing.T, path string) *sql.DB {
 	t.Helper()
 	dsn := path + "?_pragma=journal_mode(WAL)" +
@@ -209,8 +217,8 @@ func TestCreateGetUpdateDelete(t *testing.T) {
 	if string(updated.ContentCiphertext) != string([]byte{0xAA, 0xBB}) {
 		t.Errorf("updated.ContentCiphertext = %x; want aabb", updated.ContentCiphertext)
 	}
-	if updated.ModifiedAt.Before(created.ModifiedAt) {
-		t.Errorf("ModifiedAt regressed: created=%v updated=%v", created.ModifiedAt, updated.ModifiedAt)
+	if !updated.ModifiedAt.After(created.ModifiedAt) {
+		t.Errorf("ModifiedAt did not strictly advance: created=%v updated=%v", created.ModifiedAt, updated.ModifiedAt)
 	}
 
 	if err := st.DeleteConfig(ctx, userID, created.ID); err != nil {
@@ -483,6 +491,203 @@ func TestOpenTightensDBFileMode(t *testing.T) {
 		} else if !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("stat sidecar %s: %v", p, err)
 		}
+	}
+}
+
+// TestUpdateConfigBumpsModifiedAtOnEveryCall pins the strictly-monotonic
+// modified_at contract from issue #9: ten rapid successive UpdateConfig
+// calls with no sleep between them MUST each return a strictly greater
+// ModifiedAt than the previous call. The strict-greater guarantee is
+// what lets clients diff-by-modified_at without losing edits when two
+// PATCHes land inside the same wall-clock millisecond.
+//
+// The test deliberately does NOT call SetClockForTest so the assertion
+// holds against the real wall clock; the strict-greater invariant is
+// the production contract clients depend on.
+//
+// The test asserts ONLY `cur.After(prev)` and intentionally does NOT
+// require a 1ms separation between consecutive timestamps. Although
+// WAL fsync between PATCHes makes the per-iteration wall-clock delta
+// well over 1ms on a typical Linux host, the production algorithm
+// only promises strictly-greater (`max(now, old + 1ms)` keeps the
+// candidate as-is when `now` is even one nanosecond past `old`), so
+// pinning ≥1ms here would be over-strict. v1 semantic review issue
+// #3 for #8 + #9 flagged this.
+func TestUpdateConfigBumpsModifiedAtOnEveryCall(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	st, err := sqlite.Open(ctx, newDBPath(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+
+	const userID int64 = 7
+	created, err := st.CreateConfig(ctx, userID, store.CreateConfigInput{
+		Name:              "rapid",
+		ContentCiphertext: []byte{0x01},
+		ContentNonce:      []byte{0x02},
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig: %v", err)
+	}
+
+	prev := created.ModifiedAt
+	for i := 0; i < 10; i++ {
+		updated, err := st.UpdateConfig(ctx, userID, created.ID, store.UpdateConfigPatch{
+			Name: strPtr("rapid"),
+		})
+		if err != nil {
+			t.Fatalf("UpdateConfig iter %d: %v", i, err)
+		}
+		if !updated.ModifiedAt.After(prev) {
+			t.Fatalf("iter %d: ModifiedAt did not strictly advance: prev=%v got=%v", i, prev, updated.ModifiedAt)
+		}
+		prev = updated.ModifiedAt
+	}
+}
+
+// TestUpdateConfigPreservesPrecisionWhenClockJumpsBack pins the
+// max(now, old+1ms) fallback in UpdateConfig: when the injected clock
+// returns a time strictly before the row's existing modified_at, the
+// new modified_at MUST be exactly old + 1ms. Without this guard a
+// backwards wall-clock skew (NTP jump, leap-second smear, suspended
+// VM) would write a regressed timestamp and break the issue #9
+// contract.
+//
+// Cannot run with t.Parallel because SetClockForTest mutates a
+// package-global seam.
+func TestUpdateConfigPreservesPrecisionWhenClockJumpsBack(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlite.Open(ctx, newDBPath(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+
+	const userID int64 = 11
+	created, err := st.CreateConfig(ctx, userID, store.CreateConfigInput{
+		Name:              "skew",
+		ContentCiphertext: []byte{0x01},
+		ContentNonce:      []byte{0x02},
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig: %v", err)
+	}
+
+	// Inject a clock that returns a time strictly before the row's
+	// existing modified_at. The fallback must kick in and use
+	// old + 1ms as the new modified_at.
+	jumpedBack := created.ModifiedAt.Add(-1 * time.Hour)
+	sqlite.SetClockForTest(t, func() time.Time { return jumpedBack })
+
+	updated, err := st.UpdateConfig(ctx, userID, created.ID, store.UpdateConfigPatch{
+		Name: strPtr("skew"),
+	})
+	if err != nil {
+		t.Fatalf("UpdateConfig: %v", err)
+	}
+
+	wantModifiedAt := created.ModifiedAt.Add(time.Millisecond)
+	if !updated.ModifiedAt.Equal(wantModifiedAt) {
+		t.Errorf("ModifiedAt = %v; want exactly old+1ms = %v", updated.ModifiedAt, wantModifiedAt)
+	}
+	if !updated.ModifiedAt.After(created.ModifiedAt) {
+		t.Errorf("ModifiedAt did not strictly advance under backwards clock skew: created=%v updated=%v", created.ModifiedAt, updated.ModifiedAt)
+	}
+}
+
+// TestUpdateConfigBumpsModifiedAtEvenWithEmptyPatch pins that an
+// all-nil/all-empty patch still advances modified_at. The empty-patch
+// case exists because clients sometimes touch a row without changing
+// any field (e.g. to refresh "last seen" semantics in a future revision)
+// and issue #9 requires that every successful UpdateConfig return a
+// strictly greater modified_at than the row had before.
+func TestUpdateConfigBumpsModifiedAtEvenWithEmptyPatch(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	st, err := sqlite.Open(ctx, newDBPath(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+
+	const userID int64 = 13
+	created, err := st.CreateConfig(ctx, userID, store.CreateConfigInput{
+		Name:              "noop",
+		ContentCiphertext: []byte{0x01},
+		ContentNonce:      []byte{0x02},
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig: %v", err)
+	}
+
+	updated, err := st.UpdateConfig(ctx, userID, created.ID, store.UpdateConfigPatch{})
+	if err != nil {
+		t.Fatalf("UpdateConfig (empty patch): %v", err)
+	}
+	if !updated.ModifiedAt.After(created.ModifiedAt) {
+		t.Errorf("empty-patch ModifiedAt did not strictly advance: created=%v updated=%v", created.ModifiedAt, updated.ModifiedAt)
+	}
+	// Confirm no other fields changed value.
+	if updated.Name != created.Name {
+		t.Errorf("empty-patch Name changed: %q -> %q", created.Name, updated.Name)
+	}
+	if string(updated.ContentCiphertext) != string(created.ContentCiphertext) {
+		t.Errorf("empty-patch ContentCiphertext changed: %x -> %x", created.ContentCiphertext, updated.ContentCiphertext)
+	}
+	if string(updated.ContentNonce) != string(created.ContentNonce) {
+		t.Errorf("empty-patch ContentNonce changed: %x -> %x", created.ContentNonce, updated.ContentNonce)
+	}
+	if updated.LastUsedWithVersion != created.LastUsedWithVersion {
+		t.Errorf("empty-patch LastUsedWithVersion changed: %q -> %q", created.LastUsedWithVersion, updated.LastUsedWithVersion)
+	}
+}
+
+// TestModifiedAtRoundTripsThroughRFC3339 pins that the on-disk
+// modified_at format (RFC3339Nano) parses cleanly with both
+// time.RFC3339Nano and the stricter time.RFC3339, so typical clients
+// using the standard ISO8601 / RFC3339 layout can read the value the
+// API surfaces without bespoke handling. This is part of the issue #9
+// contract: monotonicity at millisecond precision MUST NOT come at the
+// cost of breaking standard parsers.
+func TestModifiedAtRoundTripsThroughRFC3339(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	path := newDBPath(t)
+	st, err := sqlite.Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+
+	const userID int64 = 17
+	created, err := st.CreateConfig(ctx, userID, store.CreateConfigInput{
+		Name:              "rfc3339",
+		ContentCiphertext: []byte{0x01},
+		ContentNonce:      []byte{0x02},
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig: %v", err)
+	}
+
+	// Read the raw on-disk string via a side-channel inspection
+	// connection so the assertion is on the persisted form, not on
+	// whatever Go re-renders from time.Time.
+	db := inspect(t, path)
+	var raw string
+	if err := db.QueryRow(`SELECT modified_at FROM configs WHERE id = ?`, created.ID).Scan(&raw); err != nil {
+		t.Fatalf("inspect select: %v", err)
+	}
+
+	if _, err := time.Parse(time.RFC3339Nano, raw); err != nil {
+		t.Errorf("modified_at %q failed time.RFC3339Nano parse: %v", raw, err)
+	}
+	if _, err := time.Parse(time.RFC3339, raw); err != nil {
+		t.Errorf("modified_at %q failed time.RFC3339 parse: %v", raw, err)
 	}
 }
 
