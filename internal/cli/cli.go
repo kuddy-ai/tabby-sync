@@ -14,11 +14,14 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 
 	"github.com/kuddy-ai/tabby-sync/internal/config"
 	"github.com/kuddy-ai/tabby-sync/internal/server"
+	"github.com/kuddy-ai/tabby-sync/internal/store/sqlite"
 	"github.com/kuddy-ai/tabby-sync/internal/version"
 )
 
@@ -82,6 +85,35 @@ func runServe(ctx context.Context, getenv func(string) string, stderr io.Writer)
 		Level: parseLogLevel(cfg.LogLevel),
 	}))
 
+	// Open the SQLite store BEFORE binding the listener so a corrupt or
+	// unwritable data directory fails fast with a clear error and no
+	// network resources are reserved on the way out. The DB file lives
+	// at ${TABBY_SYNC_DATA_DIR}/tabby-sync.db; the absolute path is NOT
+	// logged, only that the data directory is set. See
+	// docs/LOGGING_POLICY.md and AGENTS.md §7.
+	dbPath := filepath.Join(cfg.DataDir, "tabby-sync.db")
+	st, err := sqlite.Open(ctx, dbPath)
+	if err != nil {
+		// The wrapped error from sqlite.Open commonly contains the
+		// absolute DB path (os.PathError messages, ping failures echoing
+		// the DSN, etc.). Strip both cfg.DataDir and dbPath out before
+		// logging so the structured "data_dir" field stays the only place
+		// that summarises that location, and so a configured-but-broken
+		// install does not leak its on-disk layout to anyone tailing
+		// stderr. See review v1 issue #1 for #6.
+		logger.Error("failed to open sqlite store",
+			slog.String("data_dir", redactPath(cfg.DataDir)),
+			slog.String("err", scrubPaths(err.Error(), dbPath, cfg.DataDir)),
+		)
+		return 1
+	}
+	defer func() {
+		if cerr := st.Close(); cerr != nil {
+			logger.Error("failed to close sqlite store", slog.String("err", cerr.Error()))
+		}
+	}()
+	logger.Info("sqlite store opened", slog.String("data_dir", redactPath(cfg.DataDir)))
+
 	// Bind the listener up front so we can report the actual port and so we
 	// fail fast (with a clear error) before spinning up goroutines.
 	ln, err := net.Listen("tcp", cfg.Addr)
@@ -117,6 +149,50 @@ func runServe(ctx context.Context, getenv func(string) string, stderr io.Writer)
 
 	logger.Info("tabby-sync stopped")
 	return 0
+}
+
+// redactPath mirrors the redact helper in internal/config: a non-empty
+// value renders as "<set>" so logs do not leak filesystem paths, while
+// an empty value renders as "<unset>". The store layer reuses this so
+// startup logs that mention TABBY_SYNC_DATA_DIR stay consistent with
+// the redacted summary already emitted by config.Config.String().
+func redactPath(v string) string {
+	if v == "" {
+		return "<unset>"
+	}
+	return "<set>"
+}
+
+// scrubPaths returns msg with every supplied secret replaced by the
+// "<redacted>" sentinel. It is used to wash filesystem paths out of
+// wrapped error strings before they reach the structured logger: the
+// SQLite driver, os.PathError, and net.OpError all happily echo the
+// absolute DB path, which would defeat the redactPath() field on the
+// same log line. The replacement is a literal substring match so the
+// helper does not depend on path-format quirks. Empty secrets are
+// skipped to avoid an infinite "<redacted>" sprinkle when DataDir is
+// unset (which Load already rejects, but defence in depth is cheap).
+//
+// Secrets are processed longest-first so a shorter prefix (e.g.
+// cfg.DataDir) cannot consume part of a longer secret (e.g. dbPath =
+// filepath.Join(cfg.DataDir, "tabby-sync.db")) and leave the basename
+// behind in the redacted output. v2 semantic review issue #3 for #6
+// flagged this as a defence-in-depth gap; sorting here means the call
+// site is no longer order-sensitive and a future maintainer cannot
+// reintroduce the leak by reordering arguments.
+func scrubPaths(msg string, secrets ...string) string {
+	// Copy so we do not mutate the caller's slice.
+	ordered := append([]string(nil), secrets...)
+	sort.Slice(ordered, func(i, j int) bool {
+		return len(ordered[i]) > len(ordered[j])
+	})
+	for _, s := range ordered {
+		if s == "" {
+			continue
+		}
+		msg = strings.ReplaceAll(msg, s, "<redacted>")
+	}
+	return msg
 }
 
 // parseLogLevel maps a config log-level string to a slog.Level. config.Load
