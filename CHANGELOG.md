@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/kuddy-ai/tabby-sync/compare/tabby-sync-1.1.0...tabby-sync-1.2.0) (2026-05-19)
+
+
+### Features
+
+* implement init, user add/rm/rotate, and doctor CLI commands ([#39](https://github.com/kuddy-ai/tabby-sync/issues/39)) ([464adc9](https://github.com/kuddy-ai/tabby-sync/commit/464adc9885f3267ed87677a1f3187da047705317))
+
 ## [1.1.0](https://github.com/kuddy-ai/tabby-sync/compare/tabby-sync-1.0.1...tabby-sync-1.1.0) (2026-05-19)
 
 
