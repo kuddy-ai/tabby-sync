@@ -39,9 +39,17 @@ const (
 // minimal mux that serves only GET /healthz. The provided logger is not
 // retained on the server; it is only used to attach an ErrorLog wrapper so
 // http.Server's own diagnostics flow through slog.
-func New(cfg *config.Config, logger *slog.Logger) *http.Server {
+//
+// authMW is the application-level authentication middleware. Passing nil
+// is equivalent to passing [auth.None]; this preserves the contract that
+// New always returns a runnable server and lets existing tests keep
+// constructing one without an authenticator.
+func New(cfg *config.Config, logger *slog.Logger, authMW auth.Middleware) *http.Server {
 	if logger == nil {
 		logger = slog.Default()
+	}
+	if authMW == nil {
+		authMW = auth.None()
 	}
 
 	mux := http.NewServeMux()
@@ -49,7 +57,7 @@ func New(cfg *config.Config, logger *slog.Logger) *http.Server {
 
 	return &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           buildHandler(mux, logger),
+		Handler:           buildHandler(mux, logger, authMW),
 		ReadHeaderTimeout: defaultReadHeaderTimeout,
 		ReadTimeout:       defaultReadTimeout,
 		WriteTimeout:      defaultWriteTimeout,
@@ -68,7 +76,7 @@ func New(cfg *config.Config, logger *slog.Logger) *http.Server {
 //
 //  1. SecurityHeaders runs first so its headers land on EVERY response
 //     emitted by the server, including 413 from MaxBodyBytes, 500 from
-//     Recover, and any future auth-failure responses.
+//     Recover, and any 401 written by the auth middleware.
 //  2. RequestID assigns or accepts an X-Request-Id before any logger
 //     reads from the context, so every subsequent log line is
 //     correlatable.
@@ -83,10 +91,15 @@ func New(cfg *config.Config, logger *slog.Logger) *http.Server {
 //  5. MaxBodyBytes pre-reads the request body so handlers (including
 //     ones that never touch r.Body) cannot be flooded with arbitrarily
 //     large payloads.
-//  6. auth.None is a placeholder so the chain shape is stable; it
-//     keeps /healthz reachable without authentication and will be
-//     replaced by a real authenticator in a later issue.
-func buildHandler(mux http.Handler, logger *slog.Logger) http.Handler {
+//  6. routeAwareAuth(authMW) runs the supplied authenticator on every
+//     route except a GET or HEAD request to the literal /healthz path,
+//     which is exempt so liveness probes can reach the server without
+//     an Authorization header. The bypass is deliberate: /healthz
+//     exposes only the literal body "ok\n" with no version, build,
+//     configuration, DB or key state mixed in. Non-GET/HEAD methods to
+//     /healthz are still gated, so the auth-before-mux contract holds
+//     for any other verb the mux does not register.
+func buildHandler(mux http.Handler, logger *slog.Logger, authMW auth.Middleware) http.Handler {
 	return middleware.Chain(
 		mux,
 		middleware.SecurityHeaders(),
@@ -94,8 +107,32 @@ func buildHandler(mux http.Handler, logger *slog.Logger) http.Handler {
 		middleware.AccessLog(logger),
 		middleware.Recover(logger),
 		middleware.MaxBodyBytes(middleware.DefaultMaxBodyBytes),
-		auth.None(),
+		routeAwareAuth(authMW),
 	)
+}
+
+// routeAwareAuth wraps an [auth.Middleware] so it applies to every route
+// except a GET/HEAD request to the literal /healthz path. Other methods
+// (POST /healthz, OPTIONS /healthz, etc.) are still gated by authMW; the
+// mux returns 405 only after auth has run, so a probing client cannot
+// learn route shapes by bouncing requests off the bypass. Comparing
+// r.URL.Path directly (no normalisation) is intentional: the underlying
+// mux would otherwise normalise trailing slashes and we do NOT want
+// "/healthz/" or "/healthz/something" to bypass authentication.
+func routeAwareAuth(authMW auth.Middleware) auth.Middleware {
+	if authMW == nil {
+		authMW = auth.None()
+	}
+	return func(next http.Handler) http.Handler {
+		guarded := authMW(next)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/healthz" && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+				next.ServeHTTP(w, r)
+				return
+			}
+			guarded.ServeHTTP(w, r)
+		})
+	}
 }
 
 // healthz is the unauthenticated liveness probe. The body is intentionally

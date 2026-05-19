@@ -1,22 +1,19 @@
-// Package auth will host the tabby-sync authentication and authorization logic.
-//
-// Implementation lands in a later issue. This file exists so the
-// package directory ships in the issue #4 skeleton.
 package auth
 
 import "net/http"
 
-// Middleware is the contract any future authentication middleware must
-// satisfy. Wiring code in internal/server can compose an [auth.Middleware]
-// into the request pipeline today and swap in a real implementation when
-// authentication ships in a later issue without changing the surrounding
-// chain.
+// Middleware is the contract every authentication middleware in this
+// package satisfies. Wiring code in internal/server composes a single
+// [Middleware] value into the request pipeline so the route-aware
+// /healthz bypass and the real Bearer authenticator share one shape.
 type Middleware = func(http.Handler) http.Handler
 
-// None returns a no-op authentication [Middleware] that passes every
-// request through unchanged. It is used by the server skeleton to keep
-// the middleware chain shape stable until a real authenticator lands;
-// callers should NOT rely on it in production once that happens.
+// None returns a no-op [Middleware] that passes every request through
+// unchanged. It exists for two callers: tests that build the middleware
+// chain without exercising auth, and [internal/server.New] when a nil
+// auth middleware is supplied (so existing tests that pass nil keep
+// working). Production wiring MUST use [Bearer]; callers should NOT
+// rely on None to short-circuit auth at runtime.
 func None() Middleware {
 	return func(next http.Handler) http.Handler { return next }
 }

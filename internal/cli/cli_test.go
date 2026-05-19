@@ -3,6 +3,8 @@ package cli_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -140,10 +142,30 @@ func TestRunServeMissingRequiredVar(t *testing.T) {
 func TestRunServeHappyPath(t *testing.T) {
 	t.Parallel()
 
-	const sentinelUsersFile = "/this/path/should/never/appear/in/logs/users.json"
 	const sentinelProvider = "env"
 
 	sentinelDataDir := t.TempDir()
+
+	// Write a real users.yml so runServe's auth.LoadUsersFile call
+	// succeeds. The fixture mirrors the deterministic one documented in
+	// the task brief: id=1, name=alice, token_prefix=tbs_test01,
+	// token_hash=sha256("alice-token") hex-encoded, disabled=false.
+	usersDir := t.TempDir()
+	sentinelUsersFile := filepath.Join(usersDir, "users.yml")
+	tokenHash := func(s string) string {
+		sum := sha256.Sum256([]byte(s))
+		return hex.EncodeToString(sum[:])
+	}("alice-token")
+	usersYAML := "users:\n" +
+		"  - id: 1\n" +
+		"    name: alice\n" +
+		"    token_prefix: tbs_test01\n" +
+		"    token_hash: " + tokenHash + "\n" +
+		"    disabled: false\n"
+	if err := os.WriteFile(sentinelUsersFile, []byte(usersYAML), 0o600); err != nil {
+		t.Fatalf("seed users.yml: %v", err)
+	}
+
 	env := map[string]string{
 		config.EnvAddr:              "127.0.0.1:0",
 		config.EnvDataDir:           sentinelDataDir,
@@ -198,6 +220,26 @@ func TestRunServeHappyPath(t *testing.T) {
 	// Logs should mention "starting tabby-sync".
 	if !strings.Contains(logs, "starting tabby-sync") {
 		t.Errorf("logs missing 'starting tabby-sync':\n%s", logs)
+	}
+	// v1 review issue #7: the happy path must emit a structured
+	// "users file loaded" log line so an operator can confirm the
+	// users.yml was consumed without the line ever naming a user.
+	// Pinning this string here means a regression that dropped the
+	// log call (or renamed the message) would surface immediately.
+	if !strings.Contains(logs, `"msg":"users file loaded"`) {
+		t.Errorf("logs missing 'users file loaded' line:\n%s", logs)
+	}
+	// v1 review issue #7: the load path must NOT log user names. The
+	// fixture loads exactly one user named "alice"; a regression that
+	// started logging the name (or any user-identifying field other
+	// than the count) would land "alice" in the captured stderr.
+	if strings.Contains(logs, "alice") {
+		t.Errorf("logs leaked the loaded user name 'alice':\n%s", logs)
+	}
+	// And the structured user_count field should be present, since
+	// it is the only operational signal that pins a non-empty load.
+	if !strings.Contains(logs, `"user_count":1`) {
+		t.Errorf("logs missing user_count=1 field:\n%s", logs)
 	}
 }
 
@@ -270,5 +312,55 @@ func TestRunServeStoreOpenFailureRedactsPath(t *testing.T) {
 	}
 	if !strings.Contains(logs, "<redacted>") {
 		t.Errorf("logs missing <redacted> scrub marker:\n%s", logs)
+	}
+}
+
+// TestRunServeUsersFileMissingExitsAndScrubsPath is the auth-side
+// analogue of TestRunServeStoreOpenFailureRedactsPath: it points
+// TABBY_SYNC_USERS_FILE at a never-created path so auth.LoadUsersFile
+// fails, and asserts that the logged error message never echoes the
+// configured users-file path. The auth loader strips the wrapped
+// *fs.PathError before returning so the path-absence guarantee holds
+// even if cli's scrubPaths pass were ever dropped, but the cli code
+// path also feeds cfg.UsersFile to scrubPaths as defence-in-depth; a
+// regression that bypassed BOTH guards would surface here.
+func TestRunServeUsersFileMissingExitsAndScrubsPath(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	usersFile := filepath.Join(tmp, "deeply", "nested", "never-created.yml")
+
+	env := map[string]string{
+		config.EnvAddr:              "127.0.0.1:0",
+		config.EnvDataDir:           t.TempDir(),
+		config.EnvUsersFile:         usersFile,
+		config.EnvMasterKeyProvider: "env",
+		config.EnvLogLevel:          "info",
+	}
+
+	var stdout bytes.Buffer
+	stderr := &safeBuffer{}
+
+	code := cli.Run(context.Background(), []string{"tabby-sync", "serve"}, fakeEnv(env), &stdout, stderr)
+	if code != 1 {
+		t.Errorf("exit code = %d; want 1", code)
+	}
+
+	logs := stderr.String()
+	if !strings.Contains(logs, "failed to load users file") {
+		t.Errorf("logs missing users-load failure marker:\n%s", logs)
+	}
+	if strings.Contains(logs, usersFile) {
+		t.Errorf("logs leaked TABBY_SYNC_USERS_FILE (%q):\n%s", usersFile, logs)
+	}
+	// The redactPath() field on the same log line emits the "<set>"
+	// marker; asserting its presence pins the structured-field
+	// contract from the test side. (The "<redacted>" scrub marker is
+	// not asserted here because the loader already strips the path
+	// from the underlying error before scrubPaths sees it; both
+	// guards remain in place so a regression that re-introduced the
+	// path would still be caught by the substring check above.)
+	if !strings.Contains(logs, `"users_file":"<set>"`) {
+		t.Errorf("logs missing <set> redaction marker on users_file field:\n%s", logs)
 	}
 }

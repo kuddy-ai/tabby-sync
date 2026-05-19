@@ -19,6 +19,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/kuddy-ai/tabby-sync/internal/auth"
 	"github.com/kuddy-ai/tabby-sync/internal/config"
 	"github.com/kuddy-ai/tabby-sync/internal/server"
 	"github.com/kuddy-ai/tabby-sync/internal/store/sqlite"
@@ -114,6 +115,26 @@ func runServe(ctx context.Context, getenv func(string) string, stderr io.Writer)
 	}()
 	logger.Info("sqlite store opened", slog.String("data_dir", redactPath(cfg.DataDir)))
 
+	// Load users.yml and build the Bearer-token middleware BEFORE the
+	// listener binds, so a missing or malformed users file fails fast
+	// with a redacted error and no network resources are reserved on
+	// the way out. The on-disk path is NEVER logged: only the redacted
+	// "<set>" marker, the count of loaded users, and the (already
+	// scrubbed) wrapped error from auth.LoadUsersFile.
+	userStore, err := auth.LoadUsersFile(cfg.UsersFile)
+	if err != nil {
+		logger.Error("failed to load users file",
+			slog.String("users_file", redactPath(cfg.UsersFile)),
+			slog.String("err", scrubPaths(err.Error(), cfg.UsersFile)),
+		)
+		return 1
+	}
+	logger.Info("users file loaded",
+		slog.String("users_file", redactPath(cfg.UsersFile)),
+		slog.Int("user_count", userStore.UserCount()),
+	)
+	authMW := auth.Bearer(userStore, logger)
+
 	// Bind the listener up front so we can report the actual port and so we
 	// fail fast (with a clear error) before spinning up goroutines.
 	ln, err := net.Listen("tcp", cfg.Addr)
@@ -131,7 +152,7 @@ func runServe(ctx context.Context, getenv func(string) string, stderr io.Writer)
 		slog.String("config", cfg.String()),
 	)
 
-	srv := server.New(cfg, logger)
+	srv := server.New(cfg, logger, authMW)
 
 	signalCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()

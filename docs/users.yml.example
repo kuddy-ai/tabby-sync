@@ -1,0 +1,43 @@
+# tabby-sync users.yml example
+#
+# This file is the schema reference for the users database that
+# TABBY_SYNC_USERS_FILE points at. It is NOT loaded automatically:
+# copy it out of the docs/ tree, replace the placeholder hash, and
+# point TABBY_SYNC_USERS_FILE at the resulting file before starting
+# the server.
+#
+# Field reference (per user):
+#   id            Stable, positive, unique integer. Operators assign
+#                 ids by hand and MUST keep them stable across reloads;
+#                 ids are NOT derived from array position. A row's id
+#                 is the value tabby-sync stores alongside per-user
+#                 data, so changing it after issuance silently
+#                 reattributes records.
+#   name          Display name, also used as a uniqueness key during
+#                 loading. Logged on the success path of the auth
+#                 middleware to attribute requests; do NOT use a
+#                 secret here.
+#   token_prefix  Short (~8 character) human display fragment of the
+#                 token, typically the first few characters of a
+#                 tbs_-prefixed token. Operators use it to identify a
+#                 credential without revealing it.
+#   token_hash    Lowercase hex-encoded SHA-256 of the token plaintext
+#                 bytes. The plaintext token MUST NOT be stored here;
+#                 only the hash. Until issue #11 ships a CLI helper to
+#                 generate these safely, operators can produce a hash
+#                 with the standard Unix toolchain:
+#
+#                   printf %s "<token>" | sha256sum | awk '{print $1}'
+#
+#                 Note that 'printf %s' is intentional: 'echo' would
+#                 append a trailing newline that ends up in the hash.
+#   disabled      Optional. Defaults to false. A disabled user always
+#                 returns 401 even when the supplied token hashes to
+#                 token_hash; flip this when revoking a credential
+#                 without renumbering ids.
+users:
+  - id: 1
+    name: alice
+    token_prefix: tbs_alice
+    token_hash: REPLACE_ME_WITH_64_HEX_CHARS
+    disabled: false
