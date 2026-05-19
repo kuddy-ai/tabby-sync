@@ -340,6 +340,39 @@ func TestListReturnsCreated(t *testing.T) {
 	}
 }
 
+// TestListContainsNullLastUsedWithVersion pins the raw-JSON shape
+// of the list path: a freshly-created row whose last_used_with_version
+// is unset MUST serialise as the literal `null`, not `""` and not
+// the field omitted. The list-of-rows path is the one place
+// TestGetUser_Happy and TestListConfigs_EmptyReturnsArray do not
+// cover, because []configResp's *string round-trip would silently
+// flip `""` -> nil -> `null` on re-encode and hide a regression.
+// The assertion is on the raw bytes via map[string]json.RawMessage
+// so a future change that emitted `""` for an unset value would
+// flip the test. v1 semantic review issue #7 for #8 + #9.
+func TestListContainsNullLastUsedWithVersion(t *testing.T) {
+	t.Parallel()
+
+	ts := newTestServer(t)
+	_, _ = doRequest(t, ts, http.MethodPost, "/api/1/configs", ts.userAToken, map[string]string{"name": "primary"})
+
+	resp, body := doRequest(t, ts, http.MethodGet, "/api/1/configs", ts.userAToken, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d; want 200; body=%s", resp.StatusCode, body)
+	}
+
+	var raw []map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		t.Fatalf("decode raw list: %v\nbody=%s", err, body)
+	}
+	if len(raw) != 1 {
+		t.Fatalf("len(raw list) = %d; want 1; body=%s", len(raw), body)
+	}
+	if got := string(raw[0]["last_used_with_version"]); got != "null" {
+		t.Errorf("list[0].last_used_with_version = %s; want null", got)
+	}
+}
+
 func TestPatchPartialUpdates(t *testing.T) {
 	t.Parallel()
 
@@ -688,7 +721,13 @@ func TestMalformedJSONReturns400(t *testing.T) {
 	}
 }
 
-func TestNonNumericConfigIDReturns400(t *testing.T) {
+// TestNonNumericConfigIDReturns404 pins the v1-review-aligned
+// contract that any path id which cannot resolve to a valid row
+// (`abc`, `0`, `-1`) folds into the same 404 not-found shape as a
+// well-formed but missing or cross-user id. v1 semantic review
+// issue #5 for #8 + #9 noted the prior 400-vs-404 split as a
+// minor disclosure surface.
+func TestNonNumericConfigIDReturns404(t *testing.T) {
 	t.Parallel()
 
 	ts := newTestServer(t)
@@ -701,12 +740,35 @@ func TestNonNumericConfigIDReturns400(t *testing.T) {
 				body = map[string]any{"name": "x"}
 			}
 			resp, b := doRequest(t, ts, m, "/api/1/configs/abc", ts.userAToken, body)
-			if resp.StatusCode != http.StatusBadRequest {
-				t.Fatalf("%s status = %d; want 400; body=%s", m, resp.StatusCode, b)
+			if resp.StatusCode != http.StatusNotFound {
+				t.Fatalf("%s status = %d; want 404; body=%s", m, resp.StatusCode, b)
 			}
 			got := decodeAs[errorResp](t, b)
-			if got.Error != "bad request" {
-				t.Errorf("%s error = %q; want \"bad request\"", m, got.Error)
+			if got.Error != "not found" {
+				t.Errorf("%s error = %q; want \"not found\"", m, got.Error)
+			}
+		})
+	}
+}
+
+// TestNonPositiveConfigIDReturns404 pins the same contract for
+// well-formed-but-invalid integer ids (0, negative). v1 semantic
+// review issue #5 for #8 + #9.
+func TestNonPositiveConfigIDReturns404(t *testing.T) {
+	t.Parallel()
+
+	ts := newTestServer(t)
+	for _, raw := range []string{"0", "-1"} {
+		raw := raw
+		t.Run("id="+raw, func(t *testing.T) {
+			t.Parallel()
+			resp, b := doRequest(t, ts, http.MethodGet, "/api/1/configs/"+raw, ts.userAToken, nil)
+			if resp.StatusCode != http.StatusNotFound {
+				t.Fatalf("status = %d; want 404; body=%s", resp.StatusCode, b)
+			}
+			got := decodeAs[errorResp](t, b)
+			if got.Error != "not found" {
+				t.Errorf("error = %q; want \"not found\"", got.Error)
 			}
 		})
 	}
@@ -805,9 +867,10 @@ func TestContentTypeIsJSON(t *testing.T) {
 	resp, _ = doRequest(t, ts, http.MethodPost, "/api/1/configs", ts.userAToken, map[string]string{"name": ""})
 	assertJSONContentType(t, resp, "400 invalid request")
 
-	// 400 bad request (non-numeric id).
+	// 404 not found (non-numeric id; folded into the same shape as
+	// cross-user / missing per v1 review issue #5).
 	resp, _ = doRequest(t, ts, http.MethodGet, "/api/1/configs/abc", ts.userAToken, nil)
-	assertJSONContentType(t, resp, "400 bad request")
+	assertJSONContentType(t, resp, "404 not found (non-numeric id)")
 
 	// 404 not found (cross-user).
 	resp, _ = doRequest(t, ts, http.MethodGet, idPath, ts.userBToken, nil)

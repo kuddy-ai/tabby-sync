@@ -33,6 +33,13 @@ func strPtr(s string) *string { return &s }
 // under test was opened against, applying the same DSN pragmas the
 // production code uses. The tests use this to query sqlite_master and
 // PRAGMA values without reaching into the Store's unexported *sql.DB.
+//
+// _txlock is intentionally NOT mirrored on the inspection connection:
+// the production-side option only controls how BeginTx renders its
+// `BEGIN`, which is irrelevant to the read-only inspection queries
+// here. Keeping the inspection DSN narrow also prevents a future
+// regression that flips _txlock from quietly affecting any test that
+// uses this helper.
 func inspect(t *testing.T, path string) *sql.DB {
 	t.Helper()
 	dsn := path + "?_pragma=journal_mode(WAL)" +
@@ -490,14 +497,22 @@ func TestOpenTightensDBFileMode(t *testing.T) {
 // TestUpdateConfigBumpsModifiedAtOnEveryCall pins the strictly-monotonic
 // modified_at contract from issue #9: ten rapid successive UpdateConfig
 // calls with no sleep between them MUST each return a strictly greater
-// ModifiedAt than the previous call, with at least 1ms of separation
-// between consecutive timestamps. The strict-greater guarantee is what
-// lets clients diff-by-modified_at without losing edits when two
+// ModifiedAt than the previous call. The strict-greater guarantee is
+// what lets clients diff-by-modified_at without losing edits when two
 // PATCHes land inside the same wall-clock millisecond.
 //
 // The test deliberately does NOT call SetClockForTest so the assertion
 // holds against the real wall clock; the strict-greater invariant is
 // the production contract clients depend on.
+//
+// The test asserts ONLY `cur.After(prev)` and intentionally does NOT
+// require a 1ms separation between consecutive timestamps. Although
+// WAL fsync between PATCHes makes the per-iteration wall-clock delta
+// well over 1ms on a typical Linux host, the production algorithm
+// only promises strictly-greater (`max(now, old + 1ms)` keeps the
+// candidate as-is when `now` is even one nanosecond past `old`), so
+// pinning ≥1ms here would be over-strict. v1 semantic review issue
+// #3 for #8 + #9 flagged this.
 func TestUpdateConfigBumpsModifiedAtOnEveryCall(t *testing.T) {
 	t.Parallel()
 
@@ -528,9 +543,6 @@ func TestUpdateConfigBumpsModifiedAtOnEveryCall(t *testing.T) {
 		}
 		if !updated.ModifiedAt.After(prev) {
 			t.Fatalf("iter %d: ModifiedAt did not strictly advance: prev=%v got=%v", i, prev, updated.ModifiedAt)
-		}
-		if delta := updated.ModifiedAt.Sub(prev); delta < time.Millisecond {
-			t.Errorf("iter %d: ModifiedAt advanced by %v; want at least 1ms", i, delta)
 		}
 		prev = updated.ModifiedAt
 	}

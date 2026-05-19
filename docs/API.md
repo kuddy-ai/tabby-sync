@@ -35,14 +35,18 @@ stable and lowercase:
 | Code              | Meaning                                                              |
 | ----------------- | -------------------------------------------------------------------- |
 | `unauthorized`    | Auth middleware rejected the request (401).                          |
-| `bad request`     | Malformed JSON, unknown JSON field, or non-numeric path id (400).    |
+| `bad request`     | Malformed JSON or unknown JSON field (400).                          |
 | `invalid request` | Body parsed but is semantically invalid (empty name, all-nil patch). |
-| `not found`       | Row missing or owned by another user (404).                          |
+| `not found`       | Row missing, owned by another user, or `{id}` not a positive integer (404). |
 | `internal error`  | Unexpected server error; details are logged, never echoed (500).     |
 
 Cross-user access is intentionally indistinguishable from a missing
 row: an unauthenticated probe cannot use response shape to enumerate
-ids belonging to other users.
+ids belonging to other users. For the same reason, a path id that
+cannot resolve to a valid row (non-numeric, zero, or negative) also
+returns `404 not found` rather than `400 bad request`; folding bad
+ids into the same shape as cross-user / missing keeps the surface
+uniform.
 
 ## Wire format: `configResponse`
 
@@ -127,8 +131,8 @@ field, or malformed JSON returns `400`.
 Returns the config with the given numeric id.
 
 - `200 OK`: a `configResponse`.
-- `400 Bad Request`: `{id}` is not a positive integer.
-- `404 Not Found`: row missing or owned by another user.
+- `404 Not Found`: row missing, owned by another user, or `{id}` is
+  not a positive integer.
 
 ### `PATCH /api/1/configs/{id}`
 
@@ -155,17 +159,17 @@ empty `{}` returns `400 invalid request`.
 **200 OK**: the freshly-loaded `configResponse`. `modified_at` is
 strictly newer than the previous read.
 
-`400 Bad Request` for malformed bodies or non-numeric `{id}`,
-`400 invalid request` for an all-nil patch, `404 Not Found` for
-missing or cross-user rows.
+`400 Bad Request` for malformed bodies, `400 invalid request` for an
+all-nil patch, `404 Not Found` for missing or cross-user rows OR a
+non-numeric / non-positive `{id}`.
 
 ### `DELETE /api/1/configs/{id}`
 
 Deletes the config.
 
 - `204 No Content`: success, no response body.
-- `400 Bad Request`: `{id}` is not a positive integer.
-- `404 Not Found`: row missing or owned by another user.
+- `404 Not Found`: row missing, owned by another user, or `{id}` is
+  not a positive integer.
 
 ## Logging discipline
 

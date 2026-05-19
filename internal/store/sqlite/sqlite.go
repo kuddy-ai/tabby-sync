@@ -96,7 +96,20 @@ func Open(ctx context.Context, dbPath string) (*Store, error) {
 	dsn := dbPath + "?_pragma=journal_mode(WAL)" +
 		"&_pragma=foreign_keys(ON)" +
 		"&_pragma=busy_timeout(5000)" +
-		"&_pragma=synchronous(NORMAL)"
+		"&_pragma=synchronous(NORMAL)" +
+		// _txlock=immediate makes every BeginTx in this package
+		// emit `BEGIN IMMEDIATE` (instead of the SQLite default
+		// `BEGIN DEFERRED`) so the write lock is taken up-front
+		// and the SELECT-of-modified_at + UPDATE in UpdateConfig
+		// cannot race a concurrent writer slipping a new
+		// modified_at between the read and the write. modernc.org/sqlite
+		// silently ignores sql.TxOptions.Isolation, so the DSN-level
+		// option is the only way to control begin mode; see
+		// modernc.org/sqlite/sqlite.go's _txlock parser. Pinning
+		// it here also keeps the contract honest if the
+		// MaxOpenConns=1 serialisation below is ever relaxed.
+		// Addresses v1 semantic review issue #2 for #8 + #9.
+		"&_txlock=immediate"
 
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -350,13 +363,18 @@ func (s *Store) UpdateConfig(ctx context.Context, userID, configID int64, patch 
 		return store.Config{}, fmt.Errorf("%w: ciphertext and nonce must be set together", store.ErrInvalidPatch)
 	}
 
-	// BEGIN IMMEDIATE acquires the write lock up-front, which keeps the
-	// SELECT-of-modified_at and the UPDATE on the same connection and
-	// rules out a racing writer slipping a new modified_at between the
-	// read and the write. modernc.org/sqlite serialises writes through
-	// the configured single-connection pool anyway (MaxOpenConns=1 in
-	// Open), but the explicit IMMEDIATE keeps the contract self-evident
-	// and survives any future relaxation of the pool size.
+	// The Open DSN sets `_txlock=immediate` so this BeginTx emits
+	// `BEGIN IMMEDIATE`, which acquires the write lock up-front
+	// and keeps the SELECT-of-modified_at and the UPDATE on the
+	// same connection without giving any other writer a chance to
+	// slip a new modified_at between the read and the write.
+	// (modernc.org/sqlite silently ignores sql.TxOptions.Isolation,
+	// so passing sql.LevelSerializable here is decorative; the DSN
+	// option is what actually controls begin mode. The
+	// `MaxOpenConns=1` pool also serialises writers today, but the
+	// explicit IMMEDIATE keeps the contract self-evident if the
+	// pool is ever relaxed.) Addresses v1 semantic review issue
+	// #2 for #8 + #9.
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
 		return store.Config{}, fmt.Errorf("sqlite: begin update tx: %w", err)

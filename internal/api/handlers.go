@@ -228,52 +228,79 @@ func (h *handlers) currentUser(w http.ResponseWriter, r *http.Request) (auth.Use
 //     error is intentionally not echoed)
 //   - any other error         -> 500 {"error":"internal error"} with
 //     an ERROR log line carrying op, user_id, config_id and the
-//     wrapped error string (the underlying layers already
-//     path-scrub, so this is safe to log)
+//     wrapped error string
+//
+// On the catch-all "internal error" branch the wrapped error string
+// IS echoed verbatim. The runtime paths through writeStoreError are
+// dominated by the two named sentinels above; the catch-all only
+// fires when the encrypted-store wrapper or the SQLite layer
+// returns a non-sentinel error, which in practice means a database
+// I/O failure (corrupt file, disk full, OS-level error from
+// modernc.org/sqlite) or a programming error (malformed migration
+// state). The encrypted-store wrapper does not echo plaintext,
+// ciphertext, nonces, or paths in its error strings, and the SQLite
+// CRUD layer's wrapped errors are formatted as `sqlite: <op>: %w`
+// without the DB path. The SQLite constructor (Open / chmod /
+// migration apply) DOES occasionally surface paths in wrapped
+// os.PathError messages, but those errors fail before any handler
+// is reachable and are routed through `cli.runServe`'s already
+// path-scrubbed log path, not through writeStoreError. v1 semantic
+// review issue #4 for #8 + #9 noted this as a defence-in-depth
+// gap; pinning the conditions here documents why the catch-all is
+// safe today and how a future regression that makes the SQLite
+// CRUD layer carry paths would have to update this comment.
 func (h *handlers) writeStoreError(w http.ResponseWriter, r *http.Request, op string, userID, configID int64, err error) {
 	switch {
 	case errors.Is(err, store.ErrConfigNotFound):
 		writeError(w, http.StatusNotFound, errNotFound)
 	case errors.Is(err, crypto.ErrDecrypt):
-		attrs := []slog.Attr{
-			slog.String("op", op),
-			slog.Int64("user_id", userID),
-		}
-		if configID > 0 {
-			attrs = append(attrs, slog.Int64("config_id", configID))
-		}
-		h.logger.LogAttrs(r.Context(), slog.LevelError, "decrypt failure", attrs...)
+		h.logger.LogAttrs(r.Context(), slog.LevelError, "decrypt failure",
+			storeErrorAttrs(op, userID, configID, nil)...)
 		writeError(w, http.StatusInternalServerError, errInternalError)
 	default:
-		attrs := []slog.Attr{
-			slog.String("op", op),
-			slog.Int64("user_id", userID),
-			slog.String("err", err.Error()),
-		}
-		if configID > 0 {
-			// Insert config_id between user_id and err so log lines
-			// across handlers have a consistent attribute order.
-			attrs = []slog.Attr{
-				slog.String("op", op),
-				slog.Int64("user_id", userID),
-				slog.Int64("config_id", configID),
-				slog.String("err", err.Error()),
-			}
-		}
-		h.logger.LogAttrs(r.Context(), slog.LevelError, "internal error", attrs...)
+		h.logger.LogAttrs(r.Context(), slog.LevelError, "internal error",
+			storeErrorAttrs(op, userID, configID, err)...)
 		writeError(w, http.StatusInternalServerError, errInternalError)
 	}
 }
 
+// storeErrorAttrs builds the structured-log attribute slice shared
+// by the writeStoreError branches. configID is included only when
+// positive (the create / list paths set it to 0 because no row id
+// has been resolved yet); err is included only when non-nil (the
+// decrypt-failure branch deliberately does not echo the raw error).
+// Centralising the slice keeps the attribute order stable across
+// both branches and avoids the prior copy-and-rebuild pattern. v1
+// semantic review issue #8 for #8 + #9.
+func storeErrorAttrs(op string, userID, configID int64, err error) []slog.Attr {
+	attrs := make([]slog.Attr, 0, 4)
+	attrs = append(attrs, slog.String("op", op), slog.Int64("user_id", userID))
+	if configID > 0 {
+		attrs = append(attrs, slog.Int64("config_id", configID))
+	}
+	if err != nil {
+		attrs = append(attrs, slog.String("err", err.Error()))
+	}
+	return attrs
+}
+
 // parseConfigID resolves the {id} path parameter to a positive
-// int64. Anything else (non-numeric, empty, negative, zero) is
-// rejected with 400 bad request; cross-user lookups for a
-// well-formed id are still left to the store layer to map to 404.
+// int64. Anything that cannot resolve to a valid row id (non-numeric,
+// empty, negative, zero) is rejected with 404 not found rather than
+// 400, so a probing client cannot distinguish "obviously invalid id"
+// (`/configs/0`, `/configs/abc`) from "valid id, but not yours"
+// (`/configs/<other-user-id>`); the cross-user / missing-row path
+// already returns 404, and folding bad-id into the same shape keeps
+// the surface uniform. v1 semantic review issue #5 for #8 + #9
+// flagged the prior 400-vs-404 split as a minor disclosure. The
+// store layer continues to map any well-formed but absent id to
+// [store.ErrConfigNotFound], which writeStoreError surfaces as the
+// same 404.
 func parseConfigID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	raw := r.PathValue("id")
 	id, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || id <= 0 {
-		writeError(w, http.StatusBadRequest, errBadRequest)
+		writeError(w, http.StatusNotFound, errNotFound)
 		return 0, false
 	}
 	return id, true
