@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.1.0](https://github.com/kuddy-ai/tabby-sync/compare/tabby-sync-1.0.1...tabby-sync-1.1.0) (2026-05-19)
+
+
+### Features
+
+* add auto-merge workflow for release-please PRs ([#36](https://github.com/kuddy-ai/tabby-sync/issues/36)) ([bffb451](https://github.com/kuddy-ai/tabby-sync/commit/bffb451ef0c48c00d396aa3510dc273d0de1abc4)), closes [#30](https://github.com/kuddy-ai/tabby-sync/issues/30)
+* add rate limiting, quotas, Docker deployment, and security docs ([#31](https://github.com/kuddy-ai/tabby-sync/issues/31)) ([3475b6a](https://github.com/kuddy-ai/tabby-sync/commit/3475b6a238c2d25562e762529b69d78962492b36))
+
 ## [1.0.1](https://github.com/kuddy-ai/tabby-sync/compare/tabby-sync-v1.0.0...tabby-sync-1.0.1) (2026-05-19)
 
 
