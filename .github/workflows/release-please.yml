@@ -26,11 +26,11 @@ jobs:
     if: needs.release-please.outputs.pr_number != ''
     runs-on: ubuntu-latest
     steps:
-      - name: Approve release PR
-        uses: hmarr/auto-approve-action@v4
-        with:
-          pull-request-number: ${{ needs.release-please.outputs.pr_number }}
-
+      # No auto-approve step: GitHub forbids github-actions[bot] from
+      # approving a PR it created itself. If the main branch has required
+      # reviews, an operator must use a Personal Access Token instead;
+      # this is a documented release-please-action limitation. With no
+      # required reviews, the merge below works directly with GITHUB_TOKEN.
       - name: Merge release PR
         env:
           GH_TOKEN: ${{ github.token }}
