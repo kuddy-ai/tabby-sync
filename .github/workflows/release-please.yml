@@ -13,8 +13,7 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     outputs:
-      pr: ${{ steps.rp.outputs.pr }}
-      pr_number: ${{ steps.rp.outputs.prs_created && fromJSON(steps.rp.outputs.prs_created)[0].number || '' }}
+      pr_number: ${{ steps.rp.outputs.pr && fromJSON(steps.rp.outputs.pr).number || '' }}
     steps:
       - id: rp
         uses: googleapis/release-please-action@v4
@@ -35,9 +34,6 @@ jobs:
       - name: Merge release PR
         env:
           GH_TOKEN: ${{ github.token }}
-        # Try --auto first (waits for required checks if branch protection
-        # is configured); fall back to direct merge for repos without
-        # required status checks.
         run: |
           gh pr merge ${{ needs.release-please.outputs.pr_number }} --auto --squash --repo ${{ github.repository }} \
             || gh pr merge ${{ needs.release-please.outputs.pr_number }} --squash --repo ${{ github.repository }}
