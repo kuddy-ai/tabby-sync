@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.1](https://github.com/kuddy-ai/tabby-sync/compare/1.4.0...1.4.1) (2026-05-19)
+
+
+### Documentation
+
+* add Chinese README and language switch ([7b39b8f](https://github.com/kuddy-ai/tabby-sync/commit/7b39b8f03f781dd4c93715e2f0bbd12b7bf39c5a))
+
 ## [1.4.0](https://github.com/kuddy-ai/tabby-sync/compare/1.3.0...1.4.0) (2026-05-19)
 
 
