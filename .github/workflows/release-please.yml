@@ -1,4 +1,4 @@
-name: release-please
+name: Release
 
 on:
   push:
@@ -8,40 +8,43 @@ on:
 
 permissions:
   contents: write
+  issues: write
   pull-requests: write
 
 jobs:
-  release-please:
+  release:
     runs-on: ubuntu-latest
-    outputs:
-      pr_number: ${{ steps.rp.outputs.pr && fromJSON(steps.rp.outputs.pr).number || '' }}
-      release_created: ${{ steps.rp.outputs.release_created }}
     steps:
-      - id: rp
-        uses: googleapis/release-please-action@v4
+      - name: Checkout repository
+        uses: actions/checkout@v6
         with:
+          fetch-depth: 0
+
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Run release-please
+        id: release
+        uses: googleapis/release-please-action@v5
+        with:
+          token: ${{ steps.app-token.outputs.token }}
           config-file: .github/release-please-config.json
           manifest-file: .github/release-please-manifest.json
+          target-branch: main
 
-  auto-merge:
-    needs: release-please
-    # Only merge if there's a Release PR and no release was created in this run.
-    # When release_created is true, it means this is the second run after the
-    # PR was merged, and we should not attempt to merge again (avoid dead loop).
-    if: needs.release-please.outputs.pr_number != '' && needs.release-please.outputs.release_created != 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Merge release PR
+      - name: Enable auto-merge for release PR
+        if: ${{ steps.release.outputs.pr }}
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_OUTPUT: ${{ steps.release.outputs.pr }}
         run: |
-          gh pr merge ${{ needs.release-please.outputs.pr_number }} \
-            --squash \
-            --delete-branch \
-            --repo ${{ github.repository }}
-
-      - name: Re-trigger workflow to create tag and release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh workflow run release-please.yml --ref main --repo ${{ github.repository }}
+          pr_number=$(echo "$PR_OUTPUT" | jq -r '.number // empty')
+          if [ -z "$pr_number" ]; then
+            echo "No release PR number found, skipping auto-merge."
+            exit 0
+          fi
+          gh pr merge "$pr_number" --squash --auto --delete-branch
