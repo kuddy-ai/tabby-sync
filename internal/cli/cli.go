@@ -33,6 +33,9 @@ const usage = `Usage: tabby-sync <command>
 
 Commands:
   serve     Start the tabby-sync HTTP server
+  init      Initialize data directory, master key, and users file
+  user      Manage users (add, rm, rotate)
+  doctor    Check environment for common configuration problems
   version   Print version information and exit
   help      Show this message
 
@@ -69,6 +72,12 @@ func Run(ctx context.Context, args []string, getenv func(string) string, stdout,
 		return 0
 	case "serve":
 		return runServe(ctx, getenv, stderr)
+	case "init":
+		return runInit(args, getenv, stdout, stderr)
+	case "user":
+		return runUser(args, getenv, stdout, stderr)
+	case "doctor":
+		return runDoctor(args, getenv, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command: %s\n", cmd)
 		fmt.Fprint(stderr, usage)
