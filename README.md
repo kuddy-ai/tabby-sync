@@ -14,6 +14,13 @@ therefore enforces a security-first baseline from day one.
 
 Repository initialization. Business code has not been added yet.
 
+## API
+
+The HTTP API is documented in [`docs/API.md`](./docs/API.md). The
+six Tabby-compatible config sync endpoints live under `/api/1/`
+behind Bearer-token authentication; `GET /healthz` is the only
+unauthenticated route.
+
 ## Tech stack
 
 - Language: Go (`go.mod` declares `go 1.24`)
