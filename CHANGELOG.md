@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.2.1](https://github.com/kuddy-ai/tabby-sync/compare/tabby-sync-1.2.0...tabby-sync-1.2.1) (2026-05-19)
+
+
+### Bug Fixes
+
+* move auto-merge into release-please workflow ([80fe577](https://github.com/kuddy-ai/tabby-sync/commit/80fe577245d2f727e8b82f5b47e1c77b6d8d9ddb))
+* use --auto with fallback for release PR merge ([ce2589a](https://github.com/kuddy-ai/tabby-sync/commit/ce2589a252bf03bfb1eb577d040ec2863a275712)), closes [#30](https://github.com/kuddy-ai/tabby-sync/issues/30)
+* use correct release-please output to get PR number ([d97fc4b](https://github.com/kuddy-ai/tabby-sync/commit/d97fc4b519f4592a370e32d8b9a8b6b53556f183))
+* use correct release-please output to get PR number ([8c88e44](https://github.com/kuddy-ai/tabby-sync/commit/8c88e44d7be5296ee0ec30d3290bf8bff6bce032)), closes [#30](https://github.com/kuddy-ai/tabby-sync/issues/30)
+
 ## [1.2.0](https://github.com/kuddy-ai/tabby-sync/compare/tabby-sync-1.1.0...tabby-sync-1.2.0) (2026-05-19)
 
 
