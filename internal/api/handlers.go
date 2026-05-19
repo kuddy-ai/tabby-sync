@@ -30,7 +30,17 @@ const (
 	errInvalidRequest = "invalid request" // semantically invalid body (empty name, all-nil patch)
 	errNotFound       = "not found"       // missing row or cross-user access
 	errInternalError  = "internal error"  // unexpected error path; details are logged, not echoed
+	errQuotaExceeded  = "quota exceeded"  // user has reached the maximum number of configs
+	errContentTooLarge = "content too large" // config content exceeds 2 MB
 )
+
+// MaxConfigsPerUser is the maximum number of configurations a single user
+// may own. Attempts to create beyond this limit are rejected with 409.
+const MaxConfigsPerUser = 50
+
+// MaxContentBytes is the maximum size of a single config content payload
+// (2 MB). Content exceeding this is rejected with 413.
+const MaxContentBytes = 2 * 1024 * 1024
 
 // handlers carries the per-request dependencies the six API handlers
 // share: the encrypted-store wrapper (which is the single seam to
@@ -117,6 +127,16 @@ func (h *handlers) handleCreateConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errInvalidRequest)
 		return
 	}
+	// Enforce per-user config quota.
+	count, err := h.encStore.CountConfigsByUser(r.Context(), u.ID)
+	if err != nil {
+		h.writeStoreError(w, r, "count_configs", u.ID, 0, err)
+		return
+	}
+	if count >= MaxConfigsPerUser {
+		writeError(w, http.StatusConflict, errQuotaExceeded)
+		return
+	}
 	row, err := h.encStore.CreateConfigPlaintext(r.Context(), u.ID, store.CreateConfigPlaintextInput{
 		Name: req.Name,
 	})
@@ -156,6 +176,11 @@ func (h *handlers) handlePatchConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Name == nil && req.Content == nil && req.LastUsedWithVersion == nil {
 		writeError(w, http.StatusBadRequest, errInvalidRequest)
+		return
+	}
+	// Enforce max content size (2 MB).
+	if req.Content != nil && len(*req.Content) > MaxContentBytes {
+		writeError(w, http.StatusRequestEntityTooLarge, errContentTooLarge)
 		return
 	}
 	patch := store.UpdateConfigPlaintextPatch{

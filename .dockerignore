@@ -1,0 +1,31 @@
+# Git
+.git
+.gitignore
+.githooks
+
+# IDE and editor files
+.vscode
+.idea
+*.swp
+*.swo
+
+# Build artifacts
+/bin
+/out
+
+# Environment and secrets
+.env
+*.key
+*.pem
+
+# Documentation (not needed in container)
+docs/
+*.md
+!README.md
+
+# CI/CD
+.github
+
+# Test fixtures
+*_test.go
+testdata/

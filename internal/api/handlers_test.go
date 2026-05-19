@@ -131,7 +131,7 @@ func newTestServer(t *testing.T) *testServer {
 		MasterKeyProvider: "env",
 		LogLevel:          "info",
 	}
-	httpServer := server.New(cfg, logger, authMW, apiHandler)
+	httpServer := server.New(cfg, logger, authMW, apiHandler, nil)
 
 	srv := httptest.NewServer(httpServer.Handler)
 

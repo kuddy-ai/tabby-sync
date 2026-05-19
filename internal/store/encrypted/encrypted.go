@@ -244,6 +244,12 @@ func (s *Store) DeleteConfig(ctx context.Context, userID, configID int64) error 
 	return s.inner.DeleteConfig(ctx, userID, configID)
 }
 
+// CountConfigsByUser forwards directly to the underlying [store.Store].
+// No encryption is involved.
+func (s *Store) CountConfigsByUser(ctx context.Context, userID int64) (int, error) {
+	return s.inner.CountConfigsByUser(ctx, userID)
+}
+
 // toPlaintext copies the metadata fields from a [store.Config] into a
 // [store.ConfigWithPlaintext] and attaches the supplied plaintext. The
 // ciphertext / nonce fields are intentionally dropped.

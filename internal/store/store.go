@@ -106,6 +106,19 @@ type UpdateConfigPatch struct {
 	LastUsedWithVersion *string
 }
 
+// ErrQuotaExceeded is returned by higher layers when a user has reached
+// the maximum number of allowed configurations. Currently the API layer
+// checks the quota and returns HTTP 409 directly; this sentinel is
+// retained for future use by middleware or store-layer enforcement via
+// errors.Is.
+var ErrQuotaExceeded = errors.New("store: config quota exceeded")
+
+// ErrContentTooLarge is returned when a config content payload exceeds
+// the maximum allowed size (2 MB). Currently the API layer validates
+// content size and returns HTTP 413 directly; this sentinel is retained
+// for future use by middleware or store-layer enforcement via errors.Is.
+var ErrContentTooLarge = errors.New("store: content too large")
+
 // Store is the persistence contract every backend must satisfy.
 //
 // Every method that takes a userID scopes its work to that user. In
@@ -150,6 +163,11 @@ type Store interface {
 	// configID IFF it is owned by userID. Cross-user access and
 	// missing rows both MUST return [ErrConfigNotFound].
 	DeleteConfig(ctx context.Context, userID, configID int64) error
+
+	// CountConfigsByUser returns the number of configuration rows owned
+	// by userID. It is used for quota enforcement before creating a new
+	// config.
+	CountConfigsByUser(ctx context.Context, userID int64) (int, error)
 
 	// Close releases any resources held by the store (database
 	// connections, file handles, etc.). It is safe to call Close more
@@ -269,6 +287,10 @@ type EncryptedStore interface {
 	// owned by userID. The contract mirrors [Store.DeleteConfig];
 	// no encryption is involved.
 	DeleteConfig(ctx context.Context, userID, configID int64) error
+
+	// CountConfigsByUser returns the number of configuration rows
+	// owned by userID. Used for quota enforcement.
+	CountConfigsByUser(ctx context.Context, userID int64) (int, error)
 
 	// Close releases the underlying [Store] (and any wrapper-owned
 	// resources). It is safe to call more than once.

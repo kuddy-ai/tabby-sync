@@ -459,6 +459,20 @@ func (s *Store) DeleteConfig(ctx context.Context, userID, configID int64) error 
 	return nil
 }
 
+// CountConfigsByUser returns the number of configuration rows owned by
+// userID. Used for quota enforcement before creating a new config.
+func (s *Store) CountConfigsByUser(ctx context.Context, userID int64) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM configs WHERE user_id = ?`,
+		userID,
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("sqlite: count configs: %w", err)
+	}
+	return count, nil
+}
+
 // rowScanner is the subset of *sql.Row / *sql.Rows used by [scanConfig].
 // Accepting either type keeps the row decoder usable from both
 // QueryRow-style and Query-style call sites without duplicating the

@@ -18,11 +18,13 @@ import (
 	"sort"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/kuddy-ai/tabby-sync/internal/api"
 	"github.com/kuddy-ai/tabby-sync/internal/auth"
 	"github.com/kuddy-ai/tabby-sync/internal/config"
 	"github.com/kuddy-ai/tabby-sync/internal/keys"
+	"github.com/kuddy-ai/tabby-sync/internal/ratelimit"
 	"github.com/kuddy-ai/tabby-sync/internal/server"
 	"github.com/kuddy-ai/tabby-sync/internal/store/encrypted"
 	"github.com/kuddy-ai/tabby-sync/internal/store/sqlite"
@@ -199,7 +201,7 @@ func runServe(ctx context.Context, getenv func(string) string, stderr io.Writer)
 		slog.String("config", cfg.String()),
 	)
 
-	srv := server.New(cfg, logger, authMW, apiHandler)
+	srv := server.New(cfg, logger, authMW, apiHandler, ratelimit.New(60, time.Minute))
 
 	signalCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()

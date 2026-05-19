@@ -17,6 +17,7 @@ import (
 
 	"github.com/kuddy-ai/tabby-sync/internal/auth"
 	"github.com/kuddy-ai/tabby-sync/internal/config"
+	"github.com/kuddy-ai/tabby-sync/internal/ratelimit"
 	"github.com/kuddy-ai/tabby-sync/internal/server/middleware"
 )
 
@@ -52,7 +53,9 @@ const (
 // /api/1/* request. Tests that do not exercise the API may pass nil;
 // /healthz keeps working in that mode and any /api/1/* request falls
 // through to the mux's 404 (still after the auth middleware).
-func New(cfg *config.Config, logger *slog.Logger, authMW auth.Middleware, apiHandler http.Handler) *http.Server {
+//
+// limiter, when non-nil, adds per-key rate limiting after authentication.
+func New(cfg *config.Config, logger *slog.Logger, authMW auth.Middleware, apiHandler http.Handler, limiter *ratelimit.Limiter) *http.Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -68,7 +71,7 @@ func New(cfg *config.Config, logger *slog.Logger, authMW auth.Middleware, apiHan
 
 	return &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           buildHandler(mux, logger, authMW),
+		Handler:           buildHandler(mux, logger, authMW, limiter),
 		ReadHeaderTimeout: defaultReadHeaderTimeout,
 		ReadTimeout:       defaultReadTimeout,
 		WriteTimeout:      defaultWriteTimeout,
@@ -110,16 +113,19 @@ func New(cfg *config.Config, logger *slog.Logger, authMW auth.Middleware, apiHan
 //     configuration, DB or key state mixed in. Non-GET/HEAD methods to
 //     /healthz are still gated, so the auth-before-mux contract holds
 //     for any other verb the mux does not register.
-func buildHandler(mux http.Handler, logger *slog.Logger, authMW auth.Middleware) http.Handler {
-	return middleware.Chain(
-		mux,
+func buildHandler(mux http.Handler, logger *slog.Logger, authMW auth.Middleware, limiter *ratelimit.Limiter) http.Handler {
+	mws := []middleware.Middleware{
 		middleware.SecurityHeaders(),
 		middleware.RequestID,
 		middleware.AccessLog(logger),
 		middleware.Recover(logger),
 		middleware.MaxBodyBytes(middleware.DefaultMaxBodyBytes),
 		routeAwareAuth(authMW),
-	)
+	}
+	if limiter != nil {
+		mws = append(mws, ratelimit.Middleware(limiter, logger))
+	}
+	return middleware.Chain(mux, mws...)
 }
 
 // routeAwareAuth wraps an [auth.Middleware] so it applies to every route
