@@ -96,6 +96,7 @@
 
 如果项目使用 release-please：
 
+- AI 不得手动修改 `CHANGELOG.md`，该文件由 release-please 自动管理
 - AI 不得只依赖 commit footer 生成 CHANGELOG Issue 链接
 - 每个进入 release notes 的 PR 必须提供 `BEGIN_COMMIT_OVERRIDE`
 - `BEGIN_COMMIT_OVERRIDE` 中每条 `feat` / `fix` / `perf` / `security` / `deps` 变更必须带对应 Issue 的 Markdown 链接
