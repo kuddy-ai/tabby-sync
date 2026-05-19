@@ -224,42 +224,36 @@ func (h *handlers) currentUser(w http.ResponseWriter, r *http.Request) (auth.Use
 //   - store.ErrConfigNotFound -> 404 {"error":"not found"} (no log)
 //   - crypto.ErrDecrypt       -> 500 {"error":"internal error"} with
 //     an ERROR log line carrying op, user_id, config_id and the
-//     literal message "decrypt failure" (NO err field; the raw
-//     error is intentionally not echoed)
+//     literal message "decrypt failure"
 //   - any other error         -> 500 {"error":"internal error"} with
-//     an ERROR log line carrying op, user_id, config_id and the
-//     wrapped error string
+//     an ERROR log line carrying op, user_id, config_id ONLY
 //
-// On the catch-all "internal error" branch the wrapped error string
-// IS echoed verbatim. The runtime paths through writeStoreError are
-// dominated by the two named sentinels above; the catch-all only
-// fires when the encrypted-store wrapper or the SQLite layer
-// returns a non-sentinel error, which in practice means a database
-// I/O failure (corrupt file, disk full, OS-level error from
-// modernc.org/sqlite) or a programming error (malformed migration
-// state). The encrypted-store wrapper does not echo plaintext,
-// ciphertext, nonces, or paths in its error strings, and the SQLite
-// CRUD layer's wrapped errors are formatted as `sqlite: <op>: %w`
-// without the DB path. The SQLite constructor (Open / chmod /
-// migration apply) DOES occasionally surface paths in wrapped
-// os.PathError messages, but those errors fail before any handler
-// is reachable and are routed through `cli.runServe`'s already
-// path-scrubbed log path, not through writeStoreError. v1 semantic
-// review issue #4 for #8 + #9 noted this as a defence-in-depth
-// gap; pinning the conditions here documents why the catch-all is
-// safe today and how a future regression that makes the SQLite
-// CRUD layer carry paths would have to update this comment.
+// Neither branch echoes the wrapped error string. The catch-all
+// branch in particular drops err on the floor so a low-probability
+// disk-full / fsync / permission failure inside the SQLite CRUD
+// layer cannot surface an underlying os.PathError (whose Path field
+// would carry the data-dir path) through the %w chain into the log
+// line. The op + user_id + config_id triple is sufficient to
+// correlate the failed handler call against the access log and the
+// per-request RequestID; startup-time errors that DO carry paths
+// are routed through cli.runServe's path-scrubbed logger instead
+// of through writeStoreError. v2 semantic review residual #1 for
+// #8 + #9 promoted this from a documented assumption to a
+// structural property: TestWriteStoreErrorCatchAllDoesNotEchoWrappedError
+// pins the absence of the wrapped error string by feeding a
+// synthetic os.PathError-bearing wrapped error and asserting the
+// captured log line does not carry its Path.
 func (h *handlers) writeStoreError(w http.ResponseWriter, r *http.Request, op string, userID, configID int64, err error) {
 	switch {
 	case errors.Is(err, store.ErrConfigNotFound):
 		writeError(w, http.StatusNotFound, errNotFound)
 	case errors.Is(err, crypto.ErrDecrypt):
 		h.logger.LogAttrs(r.Context(), slog.LevelError, "decrypt failure",
-			storeErrorAttrs(op, userID, configID, nil)...)
+			storeErrorAttrs(op, userID, configID)...)
 		writeError(w, http.StatusInternalServerError, errInternalError)
 	default:
 		h.logger.LogAttrs(r.Context(), slog.LevelError, "internal error",
-			storeErrorAttrs(op, userID, configID, err)...)
+			storeErrorAttrs(op, userID, configID)...)
 		writeError(w, http.StatusInternalServerError, errInternalError)
 	}
 }
@@ -267,19 +261,18 @@ func (h *handlers) writeStoreError(w http.ResponseWriter, r *http.Request, op st
 // storeErrorAttrs builds the structured-log attribute slice shared
 // by the writeStoreError branches. configID is included only when
 // positive (the create / list paths set it to 0 because no row id
-// has been resolved yet); err is included only when non-nil (the
-// decrypt-failure branch deliberately does not echo the raw error).
-// Centralising the slice keeps the attribute order stable across
-// both branches and avoids the prior copy-and-rebuild pattern. v1
-// semantic review issue #8 for #8 + #9.
-func storeErrorAttrs(op string, userID, configID int64, err error) []slog.Attr {
-	attrs := make([]slog.Attr, 0, 4)
+// has been resolved yet). The wrapped error is intentionally NOT
+// part of the attribute set: dropping it at the helper level
+// structurally prevents either branch from echoing an underlying
+// os.PathError or other path-bearing error through %w-wrapping.
+// v1 semantic review issue #8 for #8 + #9 introduced the helper;
+// v2 semantic review residual #1 for #8 + #9 dropped the err
+// parameter to enforce the no-echo property at the type level.
+func storeErrorAttrs(op string, userID, configID int64) []slog.Attr {
+	attrs := make([]slog.Attr, 0, 3)
 	attrs = append(attrs, slog.String("op", op), slog.Int64("user_id", userID))
 	if configID > 0 {
 		attrs = append(attrs, slog.Int64("config_id", configID))
-	}
-	if err != nil {
-		attrs = append(attrs, slog.String("err", err.Error()))
 	}
 	return attrs
 }

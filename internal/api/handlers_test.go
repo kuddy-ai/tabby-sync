@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -752,25 +753,35 @@ func TestNonNumericConfigIDReturns404(t *testing.T) {
 }
 
 // TestNonPositiveConfigIDReturns404 pins the same contract for
-// well-formed-but-invalid integer ids (0, negative). v1 semantic
-// review issue #5 for #8 + #9.
+// well-formed-but-invalid integer ids (0, negative). The method
+// matrix mirrors TestNonNumericConfigIDReturns404 so a future
+// change that special-cases the non-GET methods for id <= 0 would
+// be caught at the handler layer. v1 semantic review issue #5 and
+// v2 semantic review residual #2 for #8 + #9.
 func TestNonPositiveConfigIDReturns404(t *testing.T) {
 	t.Parallel()
 
 	ts := newTestServer(t)
 	for _, raw := range []string{"0", "-1"} {
 		raw := raw
-		t.Run("id="+raw, func(t *testing.T) {
-			t.Parallel()
-			resp, b := doRequest(t, ts, http.MethodGet, "/api/1/configs/"+raw, ts.userAToken, nil)
-			if resp.StatusCode != http.StatusNotFound {
-				t.Fatalf("status = %d; want 404; body=%s", resp.StatusCode, b)
-			}
-			got := decodeAs[errorResp](t, b)
-			if got.Error != "not found" {
-				t.Errorf("error = %q; want \"not found\"", got.Error)
-			}
-		})
+		for _, m := range []string{http.MethodGet, http.MethodPatch, http.MethodDelete} {
+			m := m
+			t.Run("id="+raw+"_"+m, func(t *testing.T) {
+				t.Parallel()
+				var body any
+				if m == http.MethodPatch {
+					body = map[string]any{"name": "x"}
+				}
+				resp, b := doRequest(t, ts, m, "/api/1/configs/"+raw, ts.userAToken, body)
+				if resp.StatusCode != http.StatusNotFound {
+					t.Fatalf("%s status = %d; want 404; body=%s", m, resp.StatusCode, b)
+				}
+				got := decodeAs[errorResp](t, b)
+				if got.Error != "not found" {
+					t.Errorf("%s error = %q; want \"not found\"", m, got.Error)
+				}
+			})
+		}
 	}
 }
 
@@ -926,5 +937,87 @@ func TestErrorPathsDoNotLeakSecrets(t *testing.T) {
 	}
 	if strings.Contains(logs, hex.EncodeToString(ts.masterKey)) {
 		t.Errorf("logs leaked master key hex:\n%s", logs)
+	}
+}
+
+// TestWriteStoreErrorCatchAllDoesNotEchoWrappedError pins the
+// structural property that writeStoreError's catch-all "internal
+// error" branch never echoes the wrapped error string into the log
+// line. The branch fires on non-sentinel errors from the
+// encrypted-store wrapper or the SQLite CRUD layer (disk full,
+// fsync failure, EPERM mid-flight, corrupt page); under those
+// conditions modernc.org/sqlite's own errors can carry an
+// underlying os.PathError whose Path field is the data-dir path,
+// and a regression that reintroduced `slog.String("err",
+// err.Error())` here would surface that path. The test feeds a
+// synthetic os.PathError-bearing wrapped error through the
+// WriteStoreErrorForTest seam and asserts:
+//
+//   - the captured slog output carries the literal "internal
+//     error" message and the structured op / user_id / config_id
+//     fields (so the log line still has enough context to
+//     correlate against the access log and the per-request id);
+//   - the captured slog output does NOT carry the synthetic
+//     Path substring or the synthetic inner error message.
+//
+// v2 semantic review residual #1 for #8 + #9 promotes the prior
+// documentation-only assumption (writeStoreError comment in v1
+// review fix 8bc034f) to a structural one by removing the err
+// field at the helper layer; this test pins the absence.
+func TestWriteStoreErrorCatchAllDoesNotEchoWrappedError(t *testing.T) {
+	t.Parallel()
+
+	const (
+		secretPath  = "/tmp/should-not-leak/tabby-sync.db"
+		secretInner = "synthetic-inner-error-marker-9c4d8f2e"
+	)
+
+	buf := &safeBuffer{}
+	logger := slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	// Synthetic error chain modelling what the modernc.org/sqlite
+	// driver could surface during a CRUD operation under disk
+	// full / EPERM / fsync failure: the leaf is an os.PathError
+	// whose Path field is the data-dir path; one or more %w-wrap
+	// layers above it represent the SQLite CRUD layer's
+	// `sqlite: <op>: %w` formatting and the encrypted-store
+	// wrapper's `encrypted: <op>: %w` formatting.
+	pathErr := &os.PathError{
+		Op:   "write",
+		Path: secretPath,
+		Err:  fmt.Errorf("%s", secretInner),
+	}
+	wrapped := fmt.Errorf("encrypted: encrypt update: sqlite: update config: %w", pathErr)
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPatch, "/api/1/configs/42", nil)
+
+	api.WriteStoreErrorForTest(logger, rr, req, "update_config", 7, 42, wrapped)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d; want 500", rr.Code)
+	}
+
+	logs := buf.String()
+	if !strings.Contains(logs, `"msg":"internal error"`) {
+		t.Errorf("captured log does not carry the literal \"internal error\" message:\n%s", logs)
+	}
+	if !strings.Contains(logs, `"op":"update_config"`) {
+		t.Errorf("captured log does not carry op=update_config:\n%s", logs)
+	}
+	if !strings.Contains(logs, `"user_id":7`) {
+		t.Errorf("captured log does not carry user_id=7:\n%s", logs)
+	}
+	if !strings.Contains(logs, `"config_id":42`) {
+		t.Errorf("captured log does not carry config_id=42:\n%s", logs)
+	}
+	if strings.Contains(logs, secretPath) {
+		t.Errorf("captured log leaked synthetic data-dir path %q:\n%s", secretPath, logs)
+	}
+	if strings.Contains(logs, secretInner) {
+		t.Errorf("captured log leaked synthetic inner error %q:\n%s", secretInner, logs)
+	}
+	if strings.Contains(logs, `"err":`) {
+		t.Errorf("captured log carries an err field; the catch-all branch must not echo the wrapped error:\n%s", logs)
 	}
 }
