@@ -107,11 +107,16 @@ type UpdateConfigPatch struct {
 }
 
 // ErrQuotaExceeded is returned by higher layers when a user has reached
-// the maximum number of allowed configurations.
+// the maximum number of allowed configurations. Currently the API layer
+// checks the quota and returns HTTP 409 directly; this sentinel is
+// retained for future use by middleware or store-layer enforcement via
+// errors.Is.
 var ErrQuotaExceeded = errors.New("store: config quota exceeded")
 
 // ErrContentTooLarge is returned when a config content payload exceeds
-// the maximum allowed size (2 MB).
+// the maximum allowed size (2 MB). Currently the API layer validates
+// content size and returns HTTP 413 directly; this sentinel is retained
+// for future use by middleware or store-layer enforcement via errors.Is.
 var ErrContentTooLarge = errors.New("store: content too large")
 
 // Store is the persistence contract every backend must satisfy.

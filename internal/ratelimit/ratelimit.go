@@ -4,8 +4,9 @@
 //
 // The implementation is deliberately minimal: no persistence, no
 // distributed coordination, no Redis dependency. Buckets are stored in a
-// sync.Map and lazily garbage-collected by a background goroutine so
-// memory does not grow unbounded under scanning traffic.
+// plain map guarded by a sync.Mutex and lazily garbage-collected by a
+// background goroutine so memory does not grow unbounded under scanning
+// traffic.
 //
 // Per docs/LOGGING_POLICY.md and AGENTS.md §7, the package never logs
 // tokens, Authorization headers, request bodies, master keys, or config
