@@ -1,0 +1,23 @@
+# Replace "sync.example.com" with your actual domain.
+# Caddy will automatically obtain and renew TLS certificates via Let's Encrypt.
+#
+# For local development without TLS, replace with:
+#   :80 {
+#     reverse_proxy tabby-sync:8080
+#   }
+
+sync.example.com {
+    reverse_proxy tabby-sync:8080
+
+    # Security headers (tabby-sync sets its own, but Caddy can enforce HSTS
+    # since it terminates TLS).
+    header {
+        Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+    }
+
+    # Access log
+    log {
+        output stdout
+        format json
+    }
+}

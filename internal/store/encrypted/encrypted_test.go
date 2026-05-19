@@ -503,6 +503,10 @@ func (m *mockStore) Close() error {
 	return nil
 }
 
+func (m *mockStore) CountConfigsByUser(_ context.Context, _ int64) (int, error) {
+	return 0, nil
+}
+
 func TestCreateRollsBackOnSecondStepFailure(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

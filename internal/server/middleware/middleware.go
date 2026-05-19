@@ -266,9 +266,10 @@ func remoteIP(remoteAddr string) string {
 }
 
 // DefaultMaxBodyBytes is the body-size cap applied by [MaxBodyBytes] when
-// a caller does not override it. 1 MiB is large enough for tabby-sync's
-// JSON-style admin and sync payloads while still bounding memory cost.
-const DefaultMaxBodyBytes int64 = 1 << 20
+// a caller does not override it. 2 MiB accommodates the maximum config
+// content size (2 MB) plus JSON framing overhead while still bounding
+// memory cost per concurrent request.
+const DefaultMaxBodyBytes int64 = 2 << 20
 
 // MaxBodyBytes returns a middleware that enforces an upper bound on the
 // size of the inbound request body. Unlike [http.MaxBytesReader], which

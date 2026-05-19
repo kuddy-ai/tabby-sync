@@ -18,5 +18,5 @@ func BuildHandlerForTest(mux http.Handler, logger *slog.Logger, authMW auth.Midd
 	if authMW == nil {
 		authMW = auth.None()
 	}
-	return buildHandler(mux, logger, authMW)
+	return buildHandler(mux, logger, authMW, nil)
 }

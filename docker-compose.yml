@@ -1,0 +1,42 @@
+services:
+  tabby-sync:
+    build: .
+    container_name: tabby-sync
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - TABBY_SYNC_ADDR=:8080
+      - TABBY_SYNC_DATA_DIR=/data
+      - TABBY_SYNC_USERS_FILE=/data/users.yml
+      - TABBY_SYNC_MASTER_KEY_PROVIDER=file
+      - APP_LOG_LEVEL=info
+    volumes:
+      - tabby-data:/data
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: tabby-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      tabby-sync:
+        condition: service_healthy
+
+volumes:
+  tabby-data:
+  caddy-data:
+  caddy-config:
