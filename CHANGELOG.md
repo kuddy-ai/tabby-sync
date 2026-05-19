@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.1](https://github.com/kuddy-ai/tabby-sync/compare/tabby-sync-v1.0.0...tabby-sync-1.0.1) (2026-05-19)
+
+
+### Bug Fixes
+
+* release name shows version only without software name or v prefix ([#33](https://github.com/kuddy-ai/tabby-sync/issues/33)) ([ba88cb4](https://github.com/kuddy-ai/tabby-sync/commit/ba88cb400fbcd84272e0358a02565b850597ecb9)), closes [#32](https://github.com/kuddy-ai/tabby-sync/issues/32)
+
 ## 1.0.0 (2026-05-19)
 
 
