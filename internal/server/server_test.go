@@ -1,17 +1,21 @@
 package server_test
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/kuddy-ai/tabby-sync/internal/config"
 	"github.com/kuddy-ai/tabby-sync/internal/server"
+	"github.com/kuddy-ai/tabby-sync/internal/server/middleware"
+	"github.com/kuddy-ai/tabby-sync/internal/version"
 )
 
 func quietLogger() *slog.Logger {
@@ -41,15 +45,179 @@ func TestHealthzHandler(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Errorf("status = %d; want %d", rr.Code, http.StatusOK)
 	}
-	if got := rr.Body.String(); got != "ok" {
-		t.Errorf("body = %q; want %q", got, "ok")
+	if got := rr.Body.String(); got != "ok\n" {
+		t.Errorf("body = %q; want %q", got, "ok\n")
 	}
 	if ct := rr.Header().Get("Content-Type"); ct != "text/plain; charset=utf-8" {
 		t.Errorf("Content-Type = %q; want %q", ct, "text/plain; charset=utf-8")
 	}
 }
 
-func TestNewSetsTimeouts(t *testing.T) {
+func TestHealthzDoesNotLeakMetadata(t *testing.T) {
+	t.Parallel()
+
+	srv := server.New(newTestConfig(), quietLogger())
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rr, req)
+
+	body := rr.Body.String()
+	// The version string should never appear in the body or in headers we
+	// control. (We only check version.Version because it is the only
+	// non-empty string of those three at test time without ldflags.)
+	if version.Version != "" && strings.Contains(body, version.Version) {
+		t.Errorf("/healthz body leaks version %q: %q", version.Version, body)
+	}
+	for _, hv := range rr.Header() {
+		for _, v := range hv {
+			if version.Version != "" && strings.Contains(v, version.Version) {
+				t.Errorf("/healthz header leaks version %q: %q", version.Version, v)
+			}
+		}
+	}
+	// Sanity: the body must not contain config-derived strings either.
+	for _, leaked := range []string{"/tmp/data", "/tmp/users.json", "env", "MasterKey"} {
+		if strings.Contains(body, leaked) {
+			t.Errorf("/healthz body leaks config value %q: %q", leaked, body)
+		}
+	}
+}
+
+func TestHealthzCarriesSecurityHeadersAndRequestID(t *testing.T) {
+	t.Parallel()
+
+	srv := server.New(newTestConfig(), quietLogger())
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rr, req)
+
+	wantHeaders := map[string]string{
+		"X-Content-Type-Options":  "nosniff",
+		"Referrer-Policy":         "no-referrer",
+		"Cache-Control":           "no-store",
+		"Content-Security-Policy": "frame-ancestors 'none'",
+		"X-Frame-Options":         "DENY",
+	}
+	for k, want := range wantHeaders {
+		if got := rr.Header().Get(k); got != want {
+			t.Errorf("header %q = %q; want %q", k, got, want)
+		}
+	}
+	if got := rr.Header().Get(middleware.HeaderRequestID); got == "" {
+		t.Errorf("missing %s header", middleware.HeaderRequestID)
+	}
+}
+
+func TestServerRejectsOversizedBody(t *testing.T) {
+	t.Parallel()
+
+	srv := server.New(newTestConfig(), quietLogger())
+
+	// Even though /healthz is registered as GET, MaxBodyBytes runs ahead of
+	// the mux so a POST with a 2 MiB body should be rejected with 413.
+	body := bytes.Repeat([]byte("a"), 2<<20)
+	req := httptest.NewRequest(http.MethodPost, "/healthz", bytes.NewReader(body))
+	rr := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d; want %d", rr.Code, http.StatusRequestEntityTooLarge)
+	}
+	if strings.Contains(rr.Body.String(), "aaaa") {
+		t.Errorf("413 response echoes the request body: %q", rr.Body.String())
+	}
+	assertSecurityHeadersAndRequestID(t, rr)
+}
+
+// assertSecurityHeadersAndRequestID is a shared helper that pins the five
+// security headers and a non-empty X-Request-Id on a recorded response,
+// regardless of the underlying status code. The chain order in
+// internal/server/server.go promises these land on every response,
+// including 413 (from MaxBodyBytes) and panic-induced 500 (from Recover);
+// review v1, issue #2 asked for that promise to be tested directly.
+func assertSecurityHeadersAndRequestID(t *testing.T, rr *httptest.ResponseRecorder) {
+	t.Helper()
+	wantHeaders := map[string]string{
+		"X-Content-Type-Options":  "nosniff",
+		"Referrer-Policy":         "no-referrer",
+		"Cache-Control":           "no-store",
+		"Content-Security-Policy": "frame-ancestors 'none'",
+		"X-Frame-Options":         "DENY",
+	}
+	for k, want := range wantHeaders {
+		if got := rr.Header().Get(k); got != want {
+			t.Errorf("header %q = %q; want %q", k, got, want)
+		}
+	}
+	if got := rr.Header().Get(middleware.HeaderRequestID); got == "" {
+		t.Errorf("missing %s header", middleware.HeaderRequestID)
+	}
+}
+
+func TestPanic500CarriesSecurityHeadersAndRequestID(t *testing.T) {
+	t.Parallel()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/boom", func(_ http.ResponseWriter, _ *http.Request) {
+		panic("boom-secret-marker")
+	})
+	handler := server.BuildHandlerForTest(mux, quietLogger())
+
+	req := httptest.NewRequest(http.MethodGet, "/boom", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d; want 500", rr.Code)
+	}
+	if body := rr.Body.String(); body != "internal server error\n" {
+		t.Errorf("body = %q; want generic 500 message", body)
+	}
+	if strings.Contains(rr.Body.String(), "boom-secret-marker") {
+		t.Errorf("500 response leaks panic value: %q", rr.Body.String())
+	}
+	assertSecurityHeadersAndRequestID(t, rr)
+}
+
+func TestPanic500IsObservedByAccessLog(t *testing.T) {
+	t.Parallel()
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/boom", func(_ http.ResponseWriter, _ *http.Request) {
+		panic("boom-observed-by-access-log")
+	})
+	handler := server.BuildHandlerForTest(mux, logger)
+
+	req := httptest.NewRequest(http.MethodGet, "/boom", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d; want 500", rr.Code)
+	}
+	logs := logBuf.String()
+	// The access log entry must run AFTER Recover has converted the panic
+	// into a 500 — that is the whole point of the chain order. If the
+	// chain were inverted (Recover outside AccessLog) this assertion
+	// would fail because AccessLog's post-handler LogAttrs is never
+	// reached on panic.
+	if !strings.Contains(logs, `"msg":"http access"`) {
+		t.Errorf("access log line missing for panicked request: %s", logs)
+	}
+	if !strings.Contains(logs, `"status":500`) {
+		t.Errorf("access log did not record the 500 status: %s", logs)
+	}
+	if !strings.Contains(logs, `"msg":"panic recovered"`) {
+		t.Errorf("recover log line missing: %s", logs)
+	}
+}
+
+func TestNewSetsTimeoutsAndHeaderCap(t *testing.T) {
 	t.Parallel()
 
 	srv := server.New(newTestConfig(), quietLogger())
@@ -64,6 +232,9 @@ func TestNewSetsTimeouts(t *testing.T) {
 	}
 	if srv.IdleTimeout <= 0 {
 		t.Errorf("IdleTimeout = %v; want > 0", srv.IdleTimeout)
+	}
+	if srv.MaxHeaderBytes < 1<<20 {
+		t.Errorf("MaxHeaderBytes = %d; want >= %d", srv.MaxHeaderBytes, 1<<20)
 	}
 }
 
@@ -100,10 +271,10 @@ func TestRunGracefulShutdown(t *testing.T) {
 	}
 	body, _ := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusOK || string(body) != "ok" {
+	if resp.StatusCode != http.StatusOK || string(body) != "ok\n" {
 		cancel()
 		<-done
-		t.Fatalf("/healthz status=%d body=%q; want 200 ok", resp.StatusCode, string(body))
+		t.Fatalf("/healthz status=%d body=%q; want 200 ok\\n", resp.StatusCode, string(body))
 	}
 
 	cancel()

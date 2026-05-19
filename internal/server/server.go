@@ -15,7 +15,9 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/kuddy-ai/tabby-sync/internal/auth"
 	"github.com/kuddy-ai/tabby-sync/internal/config"
+	"github.com/kuddy-ai/tabby-sync/internal/server/middleware"
 )
 
 // Timeout defaults. ReadHeaderTimeout is set explicitly to satisfy gosec
@@ -26,6 +28,11 @@ const (
 	defaultWriteTimeout      = 30 * time.Second
 	defaultIdleTimeout       = 60 * time.Second
 	defaultShutdownTimeout   = 10 * time.Second
+
+	// defaultMaxHeaderBytes caps the size of inbound request headers.
+	// 1 MiB is far above what tabby-sync's own clients send and matches
+	// the request body cap enforced by middleware.MaxBodyBytes.
+	defaultMaxHeaderBytes = 1 << 20
 )
 
 // New builds an *http.Server bound to cfg.Addr with sane timeouts and a
@@ -38,21 +45,67 @@ func New(cfg *config.Config, logger *slog.Logger) *http.Server {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-	})
+	mux.HandleFunc("GET /healthz", healthz)
 
 	return &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           mux,
+		Handler:           buildHandler(mux, logger),
 		ReadHeaderTimeout: defaultReadHeaderTimeout,
 		ReadTimeout:       defaultReadTimeout,
 		WriteTimeout:      defaultWriteTimeout,
 		IdleTimeout:       defaultIdleTimeout,
+		MaxHeaderBytes:    defaultMaxHeaderBytes,
 		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelError),
 	}
+}
+
+// buildHandler wraps the supplied mux with the standard middleware chain.
+// It is unexported and exists so that internal/server tests can build the
+// exact same chain around a test-only handler (for example, one that
+// always panics) without having to reach into the production mux.
+//
+// Middleware chain, outermost first. Order matters:
+//
+//  1. SecurityHeaders runs first so its headers land on EVERY response
+//     emitted by the server, including 413 from MaxBodyBytes, 500 from
+//     Recover, and any future auth-failure responses.
+//  2. RequestID assigns or accepts an X-Request-Id before any logger
+//     reads from the context, so every subsequent log line is
+//     correlatable.
+//  3. AccessLog runs OUTSIDE Recover so it observes the final status
+//     code (including a 500 written by Recover when an inner handler
+//     panics) and the response size, and can attach the request id
+//     picked up from the context. AccessLog's post-handler LogAttrs
+//     call would otherwise be skipped on panic.
+//  4. Recover wraps the rest of the chain so a panic in the body-limit,
+//     auth, or handler layer becomes a generic 500 rather than tearing
+//     down the goroutine.
+//  5. MaxBodyBytes pre-reads the request body so handlers (including
+//     ones that never touch r.Body) cannot be flooded with arbitrarily
+//     large payloads.
+//  6. auth.None is a placeholder so the chain shape is stable; it
+//     keeps /healthz reachable without authentication and will be
+//     replaced by a real authenticator in a later issue.
+func buildHandler(mux http.Handler, logger *slog.Logger) http.Handler {
+	return middleware.Chain(
+		mux,
+		middleware.SecurityHeaders(),
+		middleware.RequestID,
+		middleware.AccessLog(logger),
+		middleware.Recover(logger),
+		middleware.MaxBodyBytes(middleware.DefaultMaxBodyBytes),
+		auth.None(),
+	)
+}
+
+// healthz is the unauthenticated liveness probe. The body is intentionally
+// the literal string "ok\n" with no version, build, configuration, DB or
+// key state mixed in; exposing any of that would leak deployment metadata
+// to anyone who can reach the listener.
+func healthz(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("ok\n"))
 }
 
 // Run serves srv on ln until ctx is canceled, then gracefully shuts the
