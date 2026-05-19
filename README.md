@@ -12,7 +12,9 @@ therefore enforces a security-first baseline from day one.
 
 ## Status
 
-Repository initialization. Business code has not been added yet.
+**v0.1 in progress** — core config sync API, encrypted storage, and
+authentication are implemented. See [`docs/ROADMAP.md`](./docs/ROADMAP.md)
+for the full v0.1 scope, non-goals, and future direction.
 
 ## API
 
@@ -157,6 +159,16 @@ See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for the Issue → branch → commit
 - Dependency policy is in [`docs/DEPENDENCY_POLICY.md`](./docs/DEPENDENCY_POLICY.md);
   CI policy is in [`docs/CI_SECURITY_POLICY.md`](./docs/CI_SECURITY_POLICY.md);
   AI guard-rails are in [`docs/AI_SECURITY_CHECKLIST.md`](./docs/AI_SECURITY_CHECKLIST.md).
+
+## Roadmap
+
+See [`docs/ROADMAP.md`](./docs/ROADMAP.md) for:
+
+- What v0.1 includes and what it explicitly does not
+- Future considerations (no committed timeline)
+- Guiding principles
+
+This project is **not** a public SaaS and does not intend to become one.
 
 ## License
 
