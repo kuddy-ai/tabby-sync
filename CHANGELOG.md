@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.4.0](https://github.com/kuddy-ai/tabby-sync/compare/1.3.0...1.4.0) (2026-05-19)
+
+
+### Features
+
+* use GitHub App token and fix version format in release-please ([21331a4](https://github.com/kuddy-ai/tabby-sync/commit/21331a48281822207c674bb820386db6aef52ff9))
+* use GitHub App token and fix version format in release-please ([bab09da](https://github.com/kuddy-ai/tabby-sync/commit/bab09da76b5e329829c8c76d5b15cf1fb97f1fd7))
+
+
+### Bug Fixes
+
+* use squash instead of rebase for release PR merge ([5847457](https://github.com/kuddy-ai/tabby-sync/commit/5847457ab74c26c9af597b1ef34f1f9d7c21f6e4))
+
 ## [1.3.0](https://github.com/kuddy-ai/tabby-sync/compare/1.2.1...1.3.0) (2026-05-19)
 
 
