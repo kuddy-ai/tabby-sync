@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.5.0](https://github.com/kuddy-ai/tabby-sync/compare/1.4.1...1.5.0) (2026-05-20)
+
+
+### Features
+
+* add gosec security scanner to CI workflow ([#52](https://github.com/kuddy-ai/tabby-sync/issues/52)) ([1054ca9](https://github.com/kuddy-ai/tabby-sync/commit/1054ca90362b3e07d9024b8c9f851454522fb346))
+* add Tabby config sync E2E compatibility tests ([#53](https://github.com/kuddy-ai/tabby-sync/issues/53)) ([7bd1572](https://github.com/kuddy-ai/tabby-sync/commit/7bd157280c021456d6b434d9b864b4987796abba))
+
 ## [1.4.1](https://github.com/kuddy-ai/tabby-sync/compare/1.4.0...1.4.1) (2026-05-19)
 
 
