@@ -135,6 +135,19 @@ block merging.
   bypass tokens (see `SECURITY.md` § "生产构建规则" in
   [the prompt baseline](./AGENTS.md))
 
+### Pre-built binaries
+
+CI builds executables for Linux (amd64/arm64) and Windows (amd64) for pull
+requests, published releases, and manual workflow runs. Pull request and manual
+build artifacts are retained for 30 days. Published releases also attach the
+binaries and `SHA256SUMS` to the [GitHub Releases page](../../releases).
+
+```bash
+# Linux amd64 — download and run
+chmod +x tabby-sync-linux-amd64
+./tabby-sync-linux-amd64 serve
+```
+
 ### Docker image
 
 A pre-built image is published to GHCR only when a GitHub Release is created.

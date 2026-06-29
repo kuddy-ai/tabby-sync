@@ -1,0 +1,60 @@
+name: Build binaries
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GOFLAGS: -mod=readonly
+  GOTOOLCHAIN: local
+
+jobs:
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            output: tabby-sync-linux-amd64
+          - goos: linux
+            goarch: arm64
+            output: tabby-sync-linux-arm64
+          - goos: windows
+            goarch: amd64
+            output: tabby-sync-windows-amd64.exe
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache: true
+
+      - name: Build
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          go build -trimpath -ldflags='-s -w' -o "dist/${{ matrix.output }}" ./cmd/tabby-sync
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tabby-sync-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/${{ matrix.output }}
+          retention-days: 30
