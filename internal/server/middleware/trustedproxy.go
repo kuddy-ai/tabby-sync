@@ -16,6 +16,16 @@ import (
 // (r.RemoteAddr) falls in one of these ranges get their
 // X-Forwarded-For value substituted in; every other peer is logged and
 // rate-limited by its real connecting address, forgeable header or not.
+//
+// This assumes the only direct peers in these ranges are trusted
+// reverse proxies. If tabby-sync is ever reachable directly (not just
+// via the proxy) from other hosts on the same private network, those
+// LAN clients are also direct peers in these CIDRs and can forge
+// X-Forwarded-For to spoof their logged/rate-limited IP too. Deployers
+// who expose the service on a shared LAN rather than an isolated
+// Docker bridge network should narrow defaultTrustedProxyCIDRs (or
+// pass a custom list to TrustedProxy) to just the proxy's actual
+// address.
 var defaultTrustedProxyCIDRs = []string{
 	"127.0.0.0/8",
 	"::1/128",

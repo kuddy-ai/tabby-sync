@@ -114,13 +114,13 @@ func New(cfg *config.Config, logger *slog.Logger, authMW auth.Middleware, apiHan
 //     panics) and the response size, and can attach the request id
 //     picked up from the context. AccessLog's post-handler LogAttrs
 //     call would otherwise be skipped on panic.
-//  5. Recover wraps the rest of the chain so a panic in the body-limit,
+//  6. Recover wraps the rest of the chain so a panic in the body-limit,
 //     auth, or handler layer becomes a generic 500 rather than tearing
 //     down the goroutine.
-//  6. MaxBodyBytes pre-reads the request body so handlers (including
+//  7. MaxBodyBytes pre-reads the request body so handlers (including
 //     ones that never touch r.Body) cannot be flooded with arbitrarily
 //     large payloads.
-//  7. routeAwareAuth(authMW) runs the supplied authenticator on every
+//  8. routeAwareAuth(authMW) runs the supplied authenticator on every
 //     route except a GET or HEAD request to the literal /healthz path,
 //     which is exempt so liveness probes can reach the server without
 //     an Authorization header. The bypass is deliberate: /healthz

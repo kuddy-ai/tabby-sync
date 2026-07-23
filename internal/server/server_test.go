@@ -460,6 +460,12 @@ func TestOptionsBypassesAuthEverywhereForCORSPreflight(t *testing.T) {
 			if got := rr.Header().Get("Access-Control-Allow-Origin"); got != "*" {
 				t.Errorf("OPTIONS %s Access-Control-Allow-Origin = %q; want \"*\"", path, got)
 			}
+			if got := rr.Header().Get("Access-Control-Allow-Methods"); got == "" {
+				t.Errorf("OPTIONS %s Access-Control-Allow-Methods is empty; want a method list", path)
+			}
+			if got := rr.Header().Get("Access-Control-Allow-Headers"); got == "" {
+				t.Errorf("OPTIONS %s Access-Control-Allow-Headers is empty; want a header list", path)
+			}
 		})
 	}
 }
