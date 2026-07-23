@@ -30,9 +30,10 @@ if [ "${1:-}" = "serve" ] && [ ! -f "$TABBY_SYNC_USERS_FILE" ]; then
     token="tbs_$(od -An -vtx1 -N32 /dev/urandom | tr -d ' \n')"
     hash=$(printf '%s' "$token" | sha256sum | awk '{print $1}')
     prefix=$(printf '%s' "$token" | cut -c1-12)
-    # Escape backslash and double-quote so a name containing YAML-special
-    # characters (#, :, quotes) can't break the generated file.
-    name_escaped=$(printf '%s' "$TABBY_SYNC_USER_NAME" | sed 's/\\/\\\\/g; s/"/\\"/g')
+    # Escape backslash and double-quote, and strip control characters
+    # (newline, CR, etc.) so a name containing YAML-special or control
+    # characters can't break the generated file's structure.
+    name_escaped=$(printf '%s' "$TABBY_SYNC_USER_NAME" | tr -d '\000-\037\177' | sed 's/\\/\\\\/g; s/"/\\"/g')
 
     # Every secret is written to a *.tmp path with mode 600 applied BEFORE
     # the rename, then moved into place with mv (atomic on the same
@@ -41,18 +42,24 @@ if [ "${1:-}" = "serve" ] && [ ! -f "$TABBY_SYNC_USERS_FILE" ]; then
     # world/group-readable, and a crash mid-write leaving a partial file
     # in place that would satisfy the existence check above forever.
     #
-    # users.yml is written LAST (and is the existence check this whole
-    # block guards on) so that a crash at any earlier point leaves no
-    # trace, and the next boot retries the full bootstrap from scratch
-    # instead of getting stuck on a half-written state.
+    # users.yml is written LAST and is the only file the existence check
+    # above guards on, so a crash between the two writes leaves a stale
+    # token.txt on disk - harmless, since the next boot retries the full
+    # bootstrap and overwrites it with a fresh token before writing
+    # users.yml again.
+    #
+    # The subshell scopes umask 077 to just these writes so it does not
+    # leak into the exec'd tabby-sync process below and affect the
+    # permissions of files it creates later (DB, WAL, etc).
     token_out="${TABBY_SYNC_DATA_DIR}/token.txt"
-    umask 077
-    printf '%s\n' "$token" > "${token_out}.tmp"
-    chmod 600 "${token_out}.tmp"
-    mv "${token_out}.tmp" "$token_out"
-
     users_tmp="${TABBY_SYNC_USERS_FILE}.tmp"
-    cat > "$users_tmp" <<EOF
+    (
+        umask 077
+        printf '%s\n' "$token" > "${token_out}.tmp"
+        chmod 600 "${token_out}.tmp"
+        mv "${token_out}.tmp" "$token_out"
+
+        cat > "$users_tmp" <<EOF
 users:
   - id: 1
     name: "${name_escaped}"
@@ -60,8 +67,9 @@ users:
     token_hash: ${hash}
     disabled: false
 EOF
-    chmod 600 "$users_tmp"
-    mv "$users_tmp" "$TABBY_SYNC_USERS_FILE"
+        chmod 600 "$users_tmp"
+        mv "$users_tmp" "$TABBY_SYNC_USERS_FILE"
+    )
 
     echo "=================================================================="
     echo "tabby-sync: generated first-run credentials for user '${TABBY_SYNC_USER_NAME}'"
