@@ -20,24 +20,43 @@ set -eu
 
 if [ ! -f "$TABBY_SYNC_USERS_FILE" ]; then
     mkdir -p "$(dirname "$TABBY_SYNC_USERS_FILE")"
+    mkdir -p "$TABBY_SYNC_DATA_DIR"
 
     token="tbs_$(od -An -vtx1 -N32 /dev/urandom | tr -d ' \n')"
     hash=$(printf '%s' "$token" | sha256sum | awk '{print $1}')
     prefix=$(printf '%s' "$token" | cut -c1-12)
+    # Escape backslash and double-quote so a name containing YAML-special
+    # characters (#, :, quotes) can't break the generated file.
+    name_escaped=$(printf '%s' "$TABBY_SYNC_USER_NAME" | sed 's/\\/\\\\/g; s/"/\\"/g')
 
-    cat > "$TABBY_SYNC_USERS_FILE" <<EOF
+    # Every secret is written to a *.tmp path with mode 600 applied BEFORE
+    # the rename, then moved into place with mv (atomic on the same
+    # filesystem). This avoids two problems with write-then-chmod: a
+    # window where the default umask leaves the file briefly
+    # world/group-readable, and a crash mid-write leaving a partial file
+    # in place that would satisfy the existence check above forever.
+    #
+    # users.yml is written LAST (and is the existence check this whole
+    # block guards on) so that a crash at any earlier point leaves no
+    # trace, and the next boot retries the full bootstrap from scratch
+    # instead of getting stuck on a half-written state.
+    token_out="${TABBY_SYNC_DATA_DIR}/token.txt"
+    umask 077
+    printf '%s\n' "$token" > "${token_out}.tmp"
+    chmod 600 "${token_out}.tmp"
+    mv "${token_out}.tmp" "$token_out"
+
+    users_tmp="${TABBY_SYNC_USERS_FILE}.tmp"
+    cat > "$users_tmp" <<EOF
 users:
   - id: 1
-    name: ${TABBY_SYNC_USER_NAME}
+    name: "${name_escaped}"
     token_prefix: ${prefix}
     token_hash: ${hash}
     disabled: false
 EOF
-    chmod 600 "$TABBY_SYNC_USERS_FILE"
-
-    token_out="${TABBY_SYNC_DATA_DIR}/token.txt"
-    printf '%s\n' "$token" > "$token_out"
-    chmod 600 "$token_out"
+    chmod 600 "$users_tmp"
+    mv "$users_tmp" "$TABBY_SYNC_USERS_FILE"
 
     echo "=================================================================="
     echo "tabby-sync: generated first-run credentials for user '${TABBY_SYNC_USER_NAME}'"
