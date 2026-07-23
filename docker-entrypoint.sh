@@ -17,7 +17,15 @@
 # subcommand (version, doctor, user ...) is an inspection/admin
 # invocation, not a server boot, and should not have the side effect of
 # creating credentials the operator didn't ask for.
-set -eu
+#
+# pipefail matters for the token/hash pipelines below: under plain
+# `set -e`, a pipeline's exit status is only the LAST command's, so a
+# failing `od` or `sha256sum` upstream of a successful `tr`/`awk` would
+# otherwise go unnoticed and bootstrap could proceed with an
+# empty/partial token. BusyBox ash (this image's /bin/sh) supports
+# pipefail; if this script is ever run under a shell that doesn't, this
+# line itself fails closed under set -e rather than silently no-op'ing.
+set -euo pipefail
 
 : "${TABBY_SYNC_DATA_DIR:?TABBY_SYNC_DATA_DIR must be set}"
 : "${TABBY_SYNC_USERS_FILE:?TABBY_SYNC_USERS_FILE must be set}"
