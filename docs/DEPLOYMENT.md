@@ -20,21 +20,27 @@ cd tabby-sync
 cp .env.example .env
 # Edit .env — no secrets go here; they're set in docker-compose.yml
 
-# 3. Create the data directory and users file
-mkdir -p data
-cp docs/users.yml.example data/users.yml
-# Edit data/users.yml with your user entries (see docs/users.yml.example)
-
-# 4. Update the Caddyfile with your domain
+# 3. Update the Caddyfile with your domain
 # Replace "sync.example.com" in Caddyfile with your actual domain
 
-# 5. Start everything
+# 4. Start everything
 docker compose up -d
 
-# 6. Check health
+# 5. Check health
 curl https://sync.example.com/healthz
 # Should return: ok
+
+# 6. Retrieve your auto-generated token (single-user deployments)
+docker compose exec tabby-sync cat /data/token.txt
+# Paste this into Tabby desktop > Settings > Config sync.
 ```
+
+The image bootstraps itself on first boot: if `data/users.yml` doesn't
+already exist when the container starts, it generates one random-token user
+and writes the plaintext token to `data/token.txt` (mode 600) inside the
+volume — no manual file creation needed for a single-user deployment. See
+[Users File](#users-file) below for multi-user setups, which still use
+`docs/users.yml.example` as a schema reference.
 
 ## Configuration
 
@@ -61,8 +67,18 @@ as 64 hex characters in `TABBY_SYNC_MASTER_KEY`.
 
 ### Users File
 
-See [`docs/users.yml.example`](./users.yml.example) for the schema. Each
-user needs:
+**Single user:** nothing to do — the entrypoint auto-generates
+`data/users.yml` with one random-token user on first boot if the file
+doesn't already exist, and writes the plaintext token to `data/token.txt`
+(mode 600) so you can retrieve it with
+`docker compose exec tabby-sync cat /data/token.txt`. This only happens
+ahead of the `serve` subcommand, so `docker compose run tabby-sync version`
+etc. won't create credentials as a side effect.
+
+**Multiple users:** create `data/users.yml` yourself *before* first boot
+(the auto-bootstrap only fires when the file is missing) — see
+[`docs/users.yml.example`](./users.yml.example) for the schema. Each user
+needs:
 
 - `id`: unique positive integer
 - `name`: display name
