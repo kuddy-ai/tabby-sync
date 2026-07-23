@@ -4,10 +4,11 @@
 # On first boot (no users.yml in the data volume yet): generates a random
 # token in the same tbs_<64 hex> format the upstream `user add` CLI uses,
 # writes users.yml with exactly that one user, and persists the plaintext
-# token to /data/token.txt (mode 600) so it can be read back out of the
-# volume without ever touching the running container. The master key
-# needs no help here: tabby-sync's file provider already auto-generates
-# it on first `serve` if TABBY_SYNC_MASTER_KEY_PROVIDER=file.
+# token to /data/token.txt (mode 600). The token is never written to stdout
+# (container logs are often less tightly controlled than the data volume);
+# operators retrieve it via `docker exec <container> cat /data/token.txt`.
+# The master key needs no help here: tabby-sync's file provider already
+# auto-generates it on first `serve` if TABBY_SYNC_MASTER_KEY_PROVIDER=file.
 #
 # Every subsequent boot: users.yml already exists, this block is skipped
 # entirely, and we fall straight through to `exec tabby-sync serve`.
@@ -40,9 +41,9 @@ EOF
 
     echo "=================================================================="
     echo "tabby-sync: generated first-run credentials for user '${TABBY_SYNC_USER_NAME}'"
-    echo "  token: ${token}"
-    echo "  (also saved to ${token_out} inside the data volume)"
-    echo "  This is shown ONCE. Paste it into Tabby desktop > Settings > Config sync."
+    echo "  token saved to: ${token_out} (inside the data volume, mode 600)"
+    echo "  Retrieve it with: docker exec <container> cat ${token_out}"
+    echo "  Paste it into Tabby desktop > Settings > Config sync."
     echo "=================================================================="
 fi
 
