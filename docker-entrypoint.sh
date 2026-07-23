@@ -51,11 +51,15 @@ if [ "${1:-}" = "serve" ] && [ ! -f "$TABBY_SYNC_USERS_FILE" ]; then
             token="tbs_$(od -An -vtx1 -N32 /dev/urandom | tr -d ' \n')"
             hash=$(printf '%s' "$token" | sha256sum | awk '{print $1}')
             prefix=$(printf '%s' "$token" | cut -c1-12)
-            # Escape backslash and double-quote, and strip control
-            # characters (newline, CR, etc.) so a name containing
-            # YAML-special or control characters can't break the
-            # generated file's structure.
-            name_escaped=$(printf '%s' "$TABBY_SYNC_USER_NAME" | tr -d '\000-\037\177' | sed 's/\\/\\\\/g; s/"/\\"/g')
+            # Strip control characters (newline, CR, etc.) once, up front,
+            # and reuse the result for both the YAML-escaped name below
+            # AND the log line further down - printing the raw env var in
+            # the log would let a name containing control characters
+            # inject misleading lines into container logs.
+            name_sanitized=$(printf '%s' "$TABBY_SYNC_USER_NAME" | tr -d '\000-\037\177')
+            # Escape backslash and double-quote so the sanitized name
+            # can't break the generated file's YAML structure.
+            name_escaped=$(printf '%s' "$name_sanitized" | sed 's/\\/\\\\/g; s/"/\\"/g')
 
             # Every secret is written to a *.tmp path with mode 600
             # applied BEFORE the rename, then moved into place with mv
@@ -97,7 +101,7 @@ EOF
             )
 
             echo "=================================================================="
-            echo "tabby-sync: generated first-run credentials for user '${TABBY_SYNC_USER_NAME}'"
+            echo "tabby-sync: generated first-run credentials for user '${name_sanitized}'"
             echo "  token saved to: ${token_out} (inside the data volume, mode 600)"
             echo "  Retrieve it with: docker exec <container> cat ${token_out}"
             echo "  Paste it into Tabby desktop > Settings > Config sync."
