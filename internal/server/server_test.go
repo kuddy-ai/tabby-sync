@@ -399,17 +399,26 @@ func TestHealthzWithTrailingSlashIsStillProtected(t *testing.T) {
 
 // TestHealthzWithNonGetMethodIsStillProtected pins the v1 review's fix
 // for issue #3: the bypass key is (path == "/healthz") AND (method ==
-// GET or HEAD). A POST or OPTIONS request to /healthz must still be
-// gated by the auth middleware so the auth-before-mux contract holds
-// for any verb the mux does not register; if the bypass were
-// path-only, POST /healthz would skip auth and return 405 (revealing
-// the route shape) instead of returning 401.
+// GET or HEAD). A POST request to /healthz must still be gated by the
+// auth middleware so the auth-before-mux contract holds for any verb
+// the mux does not register; if the bypass were path-only, POST
+// /healthz would skip auth and return 405 (revealing the route shape)
+// instead of returning 401.
+//
+// OPTIONS is intentionally excluded from this table: middleware.CORS
+// answers every OPTIONS request with 204 before the request reaches
+// auth at all, on every path, not just /healthz. That is correct CORS
+// preflight behaviour (a preflight never carries the real Authorization
+// header and must succeed for the browser to attempt the real request)
+// and it does not leak route shape - the 204 response is identical
+// regardless of whether the path exists. See
+// TestOptionsBypassesAuthEverywhereForCORSPreflight.
 func TestHealthzWithNonGetMethodIsStillProtected(t *testing.T) {
 	t.Parallel()
 
 	srv := server.New(newTestConfig(), quietLogger(), alwaysUnauthorized, nil, nil)
 
-	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch, http.MethodOptions} {
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch} {
 		method := method
 		t.Run(method, func(t *testing.T) {
 			t.Parallel()
@@ -418,6 +427,38 @@ func TestHealthzWithNonGetMethodIsStillProtected(t *testing.T) {
 			srv.Handler.ServeHTTP(rr, req)
 			if rr.Code != http.StatusUnauthorized {
 				t.Errorf("%s /healthz status = %d; want 401 (only GET/HEAD bypass)", method, rr.Code)
+			}
+		})
+	}
+}
+
+// TestOptionsBypassesAuthEverywhereForCORSPreflight pins the CORS fix:
+// an OPTIONS request to any path - a route that exists, one that
+// doesn't, and /healthz - gets a 204 with no auth required, because
+// middleware.CORS runs ahead of the auth middleware in the chain. This
+// is what lets the Tabby desktop client's fetch()-based sync requests
+// (which carry a custom Authorization header and therefore trigger a
+// CORS preflight) succeed at all: gating the preflight behind auth, as
+// the server did before this middleware existed, makes the preflight
+// fail with 401 and no Access-Control-Allow-* headers, which the
+// browser reports to fetch() as an opaque network error.
+func TestOptionsBypassesAuthEverywhereForCORSPreflight(t *testing.T) {
+	t.Parallel()
+
+	srv := server.New(newTestConfig(), quietLogger(), alwaysUnauthorized, nil, nil)
+
+	for _, path := range []string{"/healthz", "/api/1/user", "/api/1/configs/1", "/no-such-route"} {
+		path := path
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+			req := httptest.NewRequest(http.MethodOptions, path, nil)
+			rr := httptest.NewRecorder()
+			srv.Handler.ServeHTTP(rr, req)
+			if rr.Code != http.StatusNoContent {
+				t.Errorf("OPTIONS %s status = %d; want 204 (CORS preflight bypasses auth)", path, rr.Code)
+			}
+			if got := rr.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+				t.Errorf("OPTIONS %s Access-Control-Allow-Origin = %q; want \"*\"", path, got)
 			}
 		})
 	}
