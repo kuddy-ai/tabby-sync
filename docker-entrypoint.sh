@@ -12,13 +12,18 @@
 #
 # Every subsequent boot: users.yml already exists, this block is skipped
 # entirely, and we fall straight through to `exec tabby-sync serve`.
+#
+# Bootstrap only runs ahead of the `serve` subcommand. Any other
+# subcommand (version, doctor, user ...) is an inspection/admin
+# invocation, not a server boot, and should not have the side effect of
+# creating credentials the operator didn't ask for.
 set -eu
 
 : "${TABBY_SYNC_DATA_DIR:?TABBY_SYNC_DATA_DIR must be set}"
 : "${TABBY_SYNC_USERS_FILE:?TABBY_SYNC_USERS_FILE must be set}"
 : "${TABBY_SYNC_USER_NAME:=default}"
 
-if [ ! -f "$TABBY_SYNC_USERS_FILE" ]; then
+if [ "${1:-}" = "serve" ] && [ ! -f "$TABBY_SYNC_USERS_FILE" ]; then
     mkdir -p "$(dirname "$TABBY_SYNC_USERS_FILE")"
     mkdir -p "$TABBY_SYNC_DATA_DIR"
 
