@@ -111,6 +111,9 @@ EOF
             echo "  token saved to: ${token_out} (inside the data volume, mode 600)"
             echo "  Retrieve it with: docker exec <container> cat ${token_out}"
             echo "  Paste it into Tabby desktop > Settings > Config sync."
+            echo "  Once saved, it's safe to delete ${token_out} - nothing reads it"
+            echo "  again, only users.yml's hash is checked at request time - and"
+            echo "  removing it keeps this plaintext secret out of future backups."
             echo "=================================================================="
         fi
         rmdir "$lock_dir" 2>/dev/null || true
