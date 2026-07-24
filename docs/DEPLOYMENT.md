@@ -97,6 +97,10 @@ docker run --rm \
 docker run --rm -v tabby-data:/data alpine cat /data/users.yml
 ```
 
+(If you've changed `docker-compose.yml` to use a host bind mount instead,
+e.g. `./data:/data`, you don't need the throwaway container — just
+`cp docs/users.yml.example ./data/users.yml` directly on the host.)
+
 Each user needs:
 
 - `id`: unique positive integer
