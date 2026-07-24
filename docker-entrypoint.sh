@@ -123,7 +123,12 @@ EOF
             i=$((i + 1))
         done
         if [ ! -f "$TABBY_SYNC_USERS_FILE" ]; then
-            echo "tabby-sync: timed out waiting for concurrent bootstrap to finish" >&2
+            echo "tabby-sync: timed out waiting for concurrent bootstrap to finish." >&2
+            echo "  This container is exiting; if no other tabby-sync process is" >&2
+            echo "  actually running against this volume (e.g. a previous container" >&2
+            echo "  was SIGKILLed mid-bootstrap and left a stale lock behind), remove" >&2
+            echo "  the lock directory from the volume before restarting:" >&2
+            echo "  docker run --rm -v <volume>:${TABBY_SYNC_DATA_DIR} alpine rmdir ${lock_dir}" >&2
             exit 1
         fi
     fi

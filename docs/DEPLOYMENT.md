@@ -80,10 +80,24 @@ The generated user's display name defaults to `default`; set
 first boot to use a different name instead of editing `users.yml` by
 hand afterwards.
 
-**Multiple users:** create `data/users.yml` yourself *before* first boot
-(the auto-bootstrap only fires when the file is missing) — see
-[`docs/users.yml.example`](./users.yml.example) for the schema. Each user
-needs:
+**Multiple users:** create `users.yml` yourself *before* first boot (the
+auto-bootstrap only fires when the file is missing) — see
+[`docs/users.yml.example`](./users.yml.example) for the schema. The default
+`docker-compose.yml` uses a named volume (`tabby-data:/data`), not a host
+bind mount, so there's no `./data` directory to drop the file into directly;
+seed the volume with a throwaway container instead:
+
+```bash
+docker volume create tabby-data
+docker run --rm \
+  -v tabby-data:/data \
+  -v "$(pwd)/docs/users.yml.example:/seed.yml:ro" \
+  alpine cp /seed.yml /data/users.yml
+# Now edit the seeded file's placeholder hash/entries before starting:
+docker run --rm -v tabby-data:/data alpine cat /data/users.yml
+```
+
+Each user needs:
 
 - `id`: unique positive integer
 - `name`: display name
