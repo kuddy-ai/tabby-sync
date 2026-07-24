@@ -75,6 +75,11 @@ doesn't already exist, and writes the plaintext token to `/data/token.txt`
 ahead of the `serve` subcommand, so `docker compose run tabby-sync version`
 etc. won't create credentials as a side effect.
 
+The generated user's display name defaults to `default`; set
+`TABBY_SYNC_USER_NAME` (e.g. in `docker-compose.yml` or `.env`) before
+first boot to use a different name instead of editing `users.yml` by
+hand afterwards.
+
 **Multiple users:** create `data/users.yml` yourself *before* first boot
 (the auto-bootstrap only fires when the file is missing) — see
 [`docs/users.yml.example`](./users.yml.example) for the schema. Each user

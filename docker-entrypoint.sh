@@ -48,6 +48,12 @@ if [ "${1:-}" = "serve" ] && [ ! -f "$TABBY_SYNC_USERS_FILE" ]; then
         # Re-check inside the lock: another process may have finished
         # bootstrapping between our first check above and acquiring it.
         if [ ! -f "$TABBY_SYNC_USERS_FILE" ]; then
+            # od wraps its output across multiple lines (16 bytes/line for
+            # -N32); tr's '\n' here is tr's OWN escape sequence for a
+            # newline byte, interpreted by tr regardless of shell quoting
+            # (POSIX tr, and BusyBox's implementation, both support this),
+            # so this does strip the real newlines od emits between lines
+            # - not just literal backslash-n characters.
             token="tbs_$(od -An -vtx1 -N32 /dev/urandom | tr -d ' \n')"
             hash=$(printf '%s' "$token" | sha256sum | awk '{print $1}')
             prefix=$(printf '%s' "$token" | cut -c1-12)
