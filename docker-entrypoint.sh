@@ -63,6 +63,16 @@ if [ "${1:-}" = "serve" ] && [ ! -f "$TABBY_SYNC_USERS_FILE" ]; then
             # the log would let a name containing control characters
             # inject misleading lines into container logs.
             name_sanitized=$(printf '%s' "$TABBY_SYNC_USER_NAME" | tr -d '\000-\037\177')
+            # auth.LoadUsersFile trims whitespace and rejects an empty
+            # name, which would otherwise fail server startup on first
+            # boot for a whitespace-only TABBY_SYNC_USER_NAME (e.g. " ").
+            # Trim the same way here so bootstrap fails loudly, now,
+            # instead of writing a users.yml that can't load.
+            name_sanitized=$(printf '%s' "$name_sanitized" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+            if [ -z "$name_sanitized" ]; then
+                echo "tabby-sync: TABBY_SYNC_USER_NAME is empty or whitespace-only after sanitization; refusing to bootstrap" >&2
+                exit 1
+            fi
             # Escape backslash and double-quote so the sanitized name
             # can't break the generated file's YAML structure.
             name_escaped=$(printf '%s' "$name_sanitized" | sed 's/\\/\\\\/g; s/"/\\"/g')
