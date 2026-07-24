@@ -33,6 +33,12 @@ curl https://sync.example.com/healthz
 # 6. Retrieve your auto-generated token (single-user deployments)
 docker compose exec tabby-sync cat /data/token.txt
 # Paste this into Tabby desktop > Settings > Config sync.
+
+# 7. (Optional but recommended) Remove the plaintext copy now that you've
+# saved it in Tabby. token.txt isn't needed for the server to keep running
+# - only users.yml's hash is - and leaving it in place means it ends up in
+# any future backup/snapshot of the volume.
+docker compose exec tabby-sync rm /data/token.txt
 ```
 
 The image bootstraps itself on first boot: if `/data/users.yml` doesn't
@@ -150,14 +156,21 @@ If you already have nginx, Traefik, or another TLS-terminating proxy:
 
 ## Backup
 
+The default `docker-compose.yml` uses a named volume (`tabby-data`), not a
+host bind mount, so there's no `./data` directory to `cp` from directly —
+these examples read the volume's files through a throwaway container. (If
+you've switched to a bind mount, e.g. `./data:/data`, you can `cp` from
+`./data/...` directly instead.)
+
 ```bash
 # Stop the container (ensures SQLite WAL is checkpointed)
 docker compose stop tabby-sync
 
-# Copy critical files
-cp data/tabby-sync.db backups/tabby-sync-$(date +%Y%m%d).db
-cp data/master.key backups/master-$(date +%Y%m%d).key
-cp data/users.yml backups/users-$(date +%Y%m%d).yml
+# Copy critical files out of the named volume
+mkdir -p backups
+docker run --rm -v tabby-data:/data:ro alpine cat /data/tabby-sync.db > "backups/tabby-sync-$(date +%Y%m%d).db"
+docker run --rm -v tabby-data:/data:ro alpine cat /data/master.key > "backups/master-$(date +%Y%m%d).key"
+docker run --rm -v tabby-data:/data:ro alpine cat /data/users.yml > "backups/users-$(date +%Y%m%d).yml"
 
 # Restart
 docker compose start tabby-sync
@@ -170,9 +183,9 @@ compromised together, the attacker can decrypt all configs.
 
 ```bash
 docker compose down
-cp backups/tabby-sync-YYYYMMDD.db data/tabby-sync.db
-cp backups/master-YYYYMMDD.key data/master.key
-cp backups/users-YYYYMMDD.yml data/users.yml
+docker run --rm -i -v tabby-data:/data alpine sh -c 'cat > /data/tabby-sync.db' < backups/tabby-sync-YYYYMMDD.db
+docker run --rm -i -v tabby-data:/data alpine sh -c 'cat > /data/master.key' < backups/master-YYYYMMDD.key
+docker run --rm -i -v tabby-data:/data alpine sh -c 'cat > /data/users.yml' < backups/users-YYYYMMDD.yml
 docker compose up -d
 ```
 
