@@ -93,14 +93,18 @@ auto-bootstrap only fires when the file is missing) — see
 bind mount, so there's no `./data` directory to drop the file into directly;
 seed the volume with a throwaway container instead:
 
+Seed it through the `tabby-sync` service image itself (not a plain `alpine`
+container), so the file lands owned by the same non-root `tabby` user the
+server runs as, consistent with how the entrypoint's own auto-bootstrap
+writes it:
+
 ```bash
 docker volume create tabby-data
-docker run --rm \
-  -v tabby-data:/data \
-  -v "$(pwd)/docs/users.yml.example:/seed.yml:ro" \
-  alpine cp /seed.yml /data/users.yml
+docker compose run --rm -T --no-deps --entrypoint sh tabby-sync \
+  -c 'cat > /data/users.yml && chmod 600 /data/users.yml' \
+  < docs/users.yml.example
 # Now edit the seeded file's placeholder hash/entries before starting:
-docker run --rm -v tabby-data:/data alpine cat /data/users.yml
+docker compose run --rm -T --no-deps --entrypoint sh tabby-sync -c 'cat /data/users.yml'
 ```
 
 (If you've changed `docker-compose.yml` to use a host bind mount instead,
@@ -181,11 +185,17 @@ compromised together, the attacker can decrypt all configs.
 
 ## Restore
 
+Restore writes through the `tabby-sync` service image itself (not a plain
+`alpine` container) so the files land owned by the same non-root `tabby`
+user the server runs as. A plain root container would leave them
+root-owned, and the server's `os.Chmod(dbPath, 0600)` on startup fails
+with EPERM on a file it doesn't own.
+
 ```bash
 docker compose down
-docker run --rm -i -v tabby-data:/data alpine sh -c 'cat > /data/tabby-sync.db' < backups/tabby-sync-YYYYMMDD.db
-docker run --rm -i -v tabby-data:/data alpine sh -c 'cat > /data/master.key' < backups/master-YYYYMMDD.key
-docker run --rm -i -v tabby-data:/data alpine sh -c 'cat > /data/users.yml' < backups/users-YYYYMMDD.yml
+docker compose run --rm -T --no-deps --entrypoint sh tabby-sync -c 'cat > /data/tabby-sync.db' < backups/tabby-sync-YYYYMMDD.db
+docker compose run --rm -T --no-deps --entrypoint sh tabby-sync -c 'cat > /data/master.key' < backups/master-YYYYMMDD.key
+docker compose run --rm -T --no-deps --entrypoint sh tabby-sync -c 'cat > /data/users.yml' < backups/users-YYYYMMDD.yml
 docker compose up -d
 ```
 
