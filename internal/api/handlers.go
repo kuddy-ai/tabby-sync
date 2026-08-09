@@ -26,11 +26,11 @@ const timeFormat = time.RFC3339Nano
 // repeated as literal strings in handlers_test.go so a rename here
 // must also update the test fixtures.
 const (
-	errBadRequest     = "bad request"     // syntactically broken or malformed JSON, non-numeric path id
-	errInvalidRequest = "invalid request" // semantically invalid body (empty name, all-nil patch)
-	errNotFound       = "not found"       // missing row or cross-user access
-	errInternalError  = "internal error"  // unexpected error path; details are logged, not echoed
-	errQuotaExceeded  = "quota exceeded"  // user has reached the maximum number of configs
+	errBadRequest      = "bad request"       // syntactically broken or malformed JSON, non-numeric path id
+	errInvalidRequest  = "invalid request"   // semantically invalid body (empty name, all-nil patch)
+	errNotFound        = "not found"         // missing row or cross-user access
+	errInternalError   = "internal error"    // unexpected error path; details are logged, not echoed
+	errQuotaExceeded   = "quota exceeded"    // user has reached the maximum number of configs
 	errContentTooLarge = "content too large" // config content exceeds 2 MB
 )
 

@@ -1,9 +1,13 @@
 title = "AI Native Repository Gitleaks Policy"
 
+[extend]
+useDefault = true
+
 [allowlist]
 description = "Allowed placeholders and examples"
 regexes = [
-  '''example_token|dummy|placeholder|changeme|your_token_here'''
+  '''example_token|dummy|placeholder|changeme|your_token_here''',
+  '''REPLACE_ME_WITH_64_HEX_CHARS'''
 ]
 
 paths = [
