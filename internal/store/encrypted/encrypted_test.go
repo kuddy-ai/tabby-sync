@@ -54,6 +54,32 @@ func newWrapper(t *testing.T) (*encrypted.Store, string) {
 	return w, dbPath
 }
 
+// conflictOnceStore injects one real name update immediately before the
+// encrypted wrapper's first metadata-only compare-and-set. It makes the
+// otherwise tiny read/conditional-write race deterministic so the retry
+// path can prove that an unrelated concurrent config change is preserved.
+type conflictOnceStore struct {
+	store.Store
+	inject             bool
+	injected           bool
+	concurrentModified time.Time
+}
+
+func (s *conflictOnceStore) UpdateConfig(ctx context.Context, userID, configID int64, patch store.UpdateConfigPatch) (store.Config, error) {
+	if s.inject && patch.PreserveModifiedAt {
+		s.inject = false
+		s.injected = true
+		name := "concurrent-name"
+		updated, err := s.Store.UpdateConfig(ctx, userID, configID, store.UpdateConfigPatch{Name: &name})
+		if err != nil {
+			return store.Config{}, err
+		}
+		s.concurrentModified = updated.ModifiedAt
+		return store.Config{}, store.ErrConfigChanged
+	}
+	return s.Store.UpdateConfig(ctx, userID, configID, patch)
+}
+
 // inspect opens a separate sql.DB pointed at the same file the wrapper
 // is writing to so tests can inspect the on-disk ciphertext directly.
 func inspect(t *testing.T, path string) *sql.DB {
@@ -291,6 +317,105 @@ func TestUpdateReencrypts(t *testing.T) {
 	}
 	if bytes.Contains(afterCT, newPT) {
 		t.Error("post-update ciphertext contains new plaintext as substring")
+	}
+}
+
+func TestUpdateIdenticalContentPreservesEnvelopeAndModifiedAt(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	w, dbPath := newWrapper(t)
+	created, err := w.CreateConfigPlaintext(ctx, 1, store.CreateConfigPlaintextInput{
+		Name:                "idempotent-target",
+		Content:             plaintextSentinel,
+		LastUsedWithVersion: "1.0.234",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	db := inspect(t, dbPath)
+	beforeCT, beforeNonce := readRowBytes(t, db, created.ID)
+	sameName := created.Name
+	sameContent := append([]byte(nil), created.Content...)
+	newVersion := "1.0.235"
+	updated, err := w.UpdateConfigPlaintext(ctx, 1, created.ID, store.UpdateConfigPlaintextPatch{
+		Name:                &sameName,
+		Content:             &sameContent,
+		LastUsedWithVersion: &newVersion,
+	})
+	if err != nil {
+		t.Fatalf("idempotent Update: %v", err)
+	}
+	if !updated.ModifiedAt.Equal(created.ModifiedAt) {
+		t.Errorf("ModifiedAt changed: before=%v after=%v", created.ModifiedAt, updated.ModifiedAt)
+	}
+	if updated.LastUsedWithVersion != newVersion {
+		t.Errorf("LastUsedWithVersion = %q; want %q", updated.LastUsedWithVersion, newVersion)
+	}
+
+	afterCT, afterNonce := readRowBytes(t, db, created.ID)
+	if !bytes.Equal(beforeCT, afterCT) {
+		t.Error("ciphertext changed for identical plaintext")
+	}
+	if !bytes.Equal(beforeNonce, afterNonce) {
+		t.Error("nonce changed for identical plaintext")
+	}
+}
+
+func TestIdempotentUpdateRetriesAndPreservesConcurrentChange(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	inner, err := sqlite.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	racing := &conflictOnceStore{Store: inner}
+	w, err := encrypted.New(racing, newTestKey())
+	if err != nil {
+		_ = inner.Close()
+		t.Fatalf("encrypted.New: %v", err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+
+	created, err := w.CreateConfigPlaintext(ctx, 1, store.CreateConfigPlaintextInput{
+		Name:                "original-name",
+		Content:             plaintextSentinel,
+		LastUsedWithVersion: "1.0.234",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	db := inspect(t, dbPath)
+	beforeCT, beforeNonce := readRowBytes(t, db, created.ID)
+
+	racing.inject = true
+	sameContent := append([]byte(nil), created.Content...)
+	newVersion := "1.0.235"
+	updated, err := w.UpdateConfigPlaintext(ctx, 1, created.ID, store.UpdateConfigPlaintextPatch{
+		Content:             &sameContent,
+		LastUsedWithVersion: &newVersion,
+	})
+	if err != nil {
+		t.Fatalf("idempotent Update with conflict: %v", err)
+	}
+	if !racing.injected {
+		t.Fatal("test did not inject the concurrent update")
+	}
+	if updated.Name != "concurrent-name" {
+		t.Errorf("concurrent name was lost: got %q", updated.Name)
+	}
+	if !updated.ModifiedAt.Equal(racing.concurrentModified) {
+		t.Errorf("metadata retry moved ModifiedAt: concurrent=%v final=%v", racing.concurrentModified, updated.ModifiedAt)
+	}
+	if updated.LastUsedWithVersion != newVersion {
+		t.Errorf("LastUsedWithVersion = %q; want %q", updated.LastUsedWithVersion, newVersion)
+	}
+	afterCT, afterNonce := readRowBytes(t, db, created.ID)
+	if !bytes.Equal(beforeCT, afterCT) || !bytes.Equal(beforeNonce, afterNonce) {
+		t.Error("idempotent retry rewrote the content envelope")
 	}
 }
 

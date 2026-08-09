@@ -38,6 +38,12 @@ var ErrConfigNotFound = errors.New("store: config not found")
 // non-empty, both must be non-nil and non-empty.
 var ErrInvalidPatch = errors.New("store: invalid update patch")
 
+// ErrConfigChanged is returned by [Store.UpdateConfig] when a conditional
+// metadata-only update observes that the row's ModifiedAt no longer matches
+// UpdateConfigPatch.ExpectedModifiedAt. Callers should reload the row and
+// re-evaluate whether their update is still semantically idempotent.
+var ErrConfigChanged = errors.New("store: config changed")
+
 // Config is a single tabby-sync configuration row owned by a user.
 //
 // ContentCiphertext and ContentNonce are stored as raw bytes; they are
@@ -104,6 +110,14 @@ type UpdateConfigPatch struct {
 	ContentCiphertext   []byte
 	ContentNonce        []byte
 	LastUsedWithVersion *string
+
+	// PreserveModifiedAt is reserved for metadata-only writes issued by the
+	// encrypted-store idempotency path. It requires ExpectedModifiedAt and
+	// forbids Name/Content updates. The implementation atomically verifies
+	// the expected timestamp and updates LastUsedWithVersion without moving
+	// the configuration sync clock. A mismatch returns ErrConfigChanged.
+	PreserveModifiedAt bool
+	ExpectedModifiedAt *time.Time
 }
 
 // ErrQuotaExceeded is returned by higher layers when a user has reached
@@ -155,8 +169,10 @@ type Store interface {
 	// [ErrConfigNotFound]. A patch where exactly one of
 	// ContentCiphertext / ContentNonce is set MUST return
 	// [ErrInvalidPatch] without mutating the row. Implementations
-	// always bump ModifiedAt to "now" on a successful update and
-	// return the freshly-loaded row.
+	// normally bump ModifiedAt to "now" on a successful update and
+	// return the freshly-loaded row. The internal metadata-only
+	// PreserveModifiedAt mode instead performs a compare-and-set against
+	// ExpectedModifiedAt and returns ErrConfigChanged on a mismatch.
 	UpdateConfig(ctx context.Context, userID, configID int64, patch UpdateConfigPatch) (Config, error)
 
 	// DeleteConfig removes the configuration row identified by
@@ -198,14 +214,13 @@ type CreateConfigPlaintextInput struct {
 // absent in the patch" (nil pointer, do not change) from "field
 // supplied with an empty value" (non-nil pointer to an empty
 // string / empty byte slice, set to empty). When Content is
-// non-nil the encrypted-store wrapper re-encrypts the supplied
-// plaintext under the same (userID, configID) AAD as the original
-// write, generating a fresh random nonce, and forwards both the
-// ciphertext and the nonce to the underlying [Store.UpdateConfig];
-// in particular Content = &[]byte{} re-encrypts the empty
-// plaintext (the resulting ciphertext is just the GCM auth tag)
-// instead of being a silent no-op. Addresses v1 semantic review
-// issue #1 for #8 + #9.
+// non-nil the encrypted-store wrapper compares the supplied plaintext
+// with the current decrypted content. Different content is re-encrypted
+// under the same (userID, configID) AAD with a fresh random nonce and
+// forwarded to [Store.UpdateConfig]. Identical content is an idempotent
+// no-op: the existing ciphertext, nonce and ModifiedAt are preserved.
+// Content = &[]byte{} still clears a non-empty plaintext, while uploading
+// an already-empty plaintext is idempotent. See issue #62.
 type UpdateConfigPlaintextPatch struct {
 	Name                *string
 	Content             *[]byte
@@ -277,10 +292,12 @@ type EncryptedStore interface {
 	// patch to the row identified by configID, IFF that row is
 	// owned by userID. When patch.Content is non-nil the wrapper
 	// re-encrypts under the existing (userID, configID) AAD with a
-	// fresh random nonce; in particular Content = &[]byte{} stores
-	// the empty plaintext and is NOT treated as a no-op. Cross-user
-	// access returns [ErrConfigNotFound]; a successful update
-	// returns the freshly-loaded row with its plaintext re-attached.
+	// fresh random nonce only when the supplied plaintext differs from
+	// the current value. Name/content-identical patches preserve
+	// ModifiedAt; a last-used-version-only change is persisted without
+	// advancing the sync clock. Cross-user access returns
+	// [ErrConfigNotFound]; a successful update returns the freshly-loaded
+	// row with its plaintext re-attached.
 	UpdateConfigPlaintext(ctx context.Context, userID, configID int64, patch UpdateConfigPlaintextPatch) (ConfigWithPlaintext, error)
 
 	// DeleteConfig removes the row identified by configID IFF it is

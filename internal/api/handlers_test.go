@@ -378,32 +378,36 @@ func TestPatchPartialUpdates(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		patch      map[string]any
-		wantName   string
-		wantContnt string
-		wantLUWV   string // "" => null in raw JSON; otherwise the literal string
+		name        string
+		patch       map[string]any
+		wantName    string
+		wantContnt  string
+		wantLUWV    string // "" => null in raw JSON; otherwise the literal string
+		wantAdvance bool
 	}{
 		{
-			name:       "name_only",
-			patch:      map[string]any{"name": "renamed"},
-			wantName:   "renamed",
-			wantContnt: "",
-			wantLUWV:   "",
+			name:        "name_only",
+			patch:       map[string]any{"name": "renamed"},
+			wantName:    "renamed",
+			wantContnt:  "",
+			wantLUWV:    "",
+			wantAdvance: true,
 		},
 		{
-			name:       "content_only",
-			patch:      map[string]any{"content": "settings:\n  foo: 1\n"},
-			wantName:   "primary",
-			wantContnt: "settings:\n  foo: 1\n",
-			wantLUWV:   "",
+			name:        "content_only",
+			patch:       map[string]any{"content": "settings:\n  foo: 1\n"},
+			wantName:    "primary",
+			wantContnt:  "settings:\n  foo: 1\n",
+			wantLUWV:    "",
+			wantAdvance: true,
 		},
 		{
-			name:       "luwv_only",
-			patch:      map[string]any{"last_used_with_version": "v1.2.3"},
-			wantName:   "primary",
-			wantContnt: "",
-			wantLUWV:   "v1.2.3",
+			name:        "luwv_only",
+			patch:       map[string]any{"last_used_with_version": "v1.2.3"},
+			wantName:    "primary",
+			wantContnt:  "",
+			wantLUWV:    "v1.2.3",
+			wantAdvance: false,
 		},
 		{
 			name: "all_three",
@@ -412,9 +416,10 @@ func TestPatchPartialUpdates(t *testing.T) {
 				"content":                "settings:\n  bar: 2\n",
 				"last_used_with_version": "v9.9.9",
 			},
-			wantName:   "renamed-all",
-			wantContnt: "settings:\n  bar: 2\n",
-			wantLUWV:   "v9.9.9",
+			wantName:    "renamed-all",
+			wantContnt:  "settings:\n  bar: 2\n",
+			wantLUWV:    "v9.9.9",
+			wantAdvance: true,
 		},
 	}
 
@@ -460,10 +465,58 @@ func TestPatchPartialUpdates(t *testing.T) {
 
 			oldT, _ := time.Parse(time.RFC3339Nano, created.ModifiedAt)
 			newT, _ := time.Parse(time.RFC3339Nano, patched.ModifiedAt)
-			if !newT.After(oldT) {
+			if tc.wantAdvance && !newT.After(oldT) {
 				t.Errorf("modified_at did not advance: old=%s new=%s", created.ModifiedAt, patched.ModifiedAt)
 			}
+			if !tc.wantAdvance && !newT.Equal(oldT) {
+				t.Errorf("metadata-only modified_at changed: old=%s new=%s", created.ModifiedAt, patched.ModifiedAt)
+			}
 		})
+	}
+}
+
+func TestPatchIdenticalContentIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	ts := newTestServer(t)
+	_, body := doRequest(t, ts, http.MethodPost, "/api/1/configs", ts.userAToken,
+		map[string]string{"name": "primary"})
+	created := decodeAs[configResp](t, body)
+	idPath := "/api/1/configs/" + strconv.FormatInt(created.ID, 10)
+	content := "settings:\n  foo: 1\n"
+
+	_, body = doRequest(t, ts, http.MethodPatch, idPath, ts.userAToken, map[string]any{
+		"content":                content,
+		"last_used_with_version": "1.0.234",
+	})
+	seeded := decodeAs[configResp](t, body)
+
+	versions := []string{"1.0.235", "1.0.234", "1.0.235"}
+	for i, version := range versions {
+		resp, body := doRequest(t, ts, http.MethodPatch, idPath, ts.userAToken, map[string]any{
+			"name":                   "primary",
+			"content":                content,
+			"last_used_with_version": version,
+		})
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("idempotent PATCH #%d status = %d; want 200; body=%s", i, resp.StatusCode, body)
+		}
+		patched := decodeAs[configResp](t, body)
+		if patched.ModifiedAt != seeded.ModifiedAt {
+			t.Errorf("idempotent PATCH #%d modified_at = %q; want unchanged %q", i, patched.ModifiedAt, seeded.ModifiedAt)
+		}
+		if patched.Content != content {
+			t.Errorf("idempotent PATCH #%d content = %q; want %q", i, patched.Content, content)
+		}
+		if string(patched.LastUsedWithVersion) != strconv.Quote(version) {
+			t.Errorf("idempotent PATCH #%d last_used_with_version = %s; want %q", i, patched.LastUsedWithVersion, version)
+		}
+	}
+
+	_, body = doRequest(t, ts, http.MethodGet, idPath, ts.userAToken, nil)
+	got := decodeAs[configResp](t, body)
+	if got.ModifiedAt != seeded.ModifiedAt || string(got.LastUsedWithVersion) != strconv.Quote(versions[len(versions)-1]) {
+		t.Errorf("GET after idempotent PATCH = modified_at %q, version %s", got.ModifiedAt, got.LastUsedWithVersion)
 	}
 }
 

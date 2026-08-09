@@ -73,10 +73,11 @@ Notes:
   Setting it to the empty string `""` clears the field on disk; the
   next read will then return `null`.
 - `created_at` / `modified_at` are RFC3339Nano timestamps in UTC with
-  at least millisecond precision. `modified_at` is strictly
-  monotonic per row: every successful `PATCH` advances it by at least
-  1ms even when the wall clock has not, so clients can safely
-  diff-by-`modified_at`.
+  at least millisecond precision. `modified_at` is the semantic config
+  clock: changing `name` or `content` advances it strictly, by at least
+  1ms when the wall clock has not advanced. Repeating the same name/content
+  or changing only `last_used_with_version` preserves it, allowing clients
+  to treat idempotent uploads as no remote config change.
 
 ## Endpoints
 
@@ -156,8 +157,9 @@ empty `{}` returns `400 invalid request`.
 - `last_used_with_version`: set the recorded version. Sending `""`
   clears the field on disk; the next read returns `null`.
 
-**200 OK**: the freshly-loaded `configResponse`. `modified_at` is
-strictly newer than the previous read.
+**200 OK**: the freshly-loaded `configResponse`. `modified_at` is strictly
+newer when `name` or `content` changed. It is unchanged for an idempotent
+name/content upload or a `last_used_with_version`-only update.
 
 `400 Bad Request` for malformed bodies, `400 invalid request` for an
 all-nil patch, `404 Not Found` for missing or cross-user rows OR a

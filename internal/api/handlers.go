@@ -155,12 +155,11 @@ func (h *handlers) handleCreateConfig(w http.ResponseWriter, r *http.Request) {
 // `last_used_with_version: ""` clears the field on disk (the store
 // collapses "" and SQL NULL into a single state).
 //
-// The wrapper's UpdateConfigPlaintext re-encrypts when patch.Content
-// is non-nil, even when the dereferenced slice is empty; the handler
-// therefore allocates a (possibly empty) []byte from `*req.Content`
-// and forwards a non-nil pointer so `PATCH {"content": ""}` clears
-// the row's plaintext under a fresh nonce instead of being a silent
-// no-op. Addresses v1 semantic review issue #1 for #8 + #9.
+// The wrapper's UpdateConfigPlaintext compares a supplied content value
+// with the current plaintext and only re-encrypts when they differ. The
+// handler still forwards a non-nil pointer for an explicit empty string so
+// `PATCH {"content": ""}` clears non-empty content while an already-empty
+// row remains idempotent. See issue #62.
 func (h *handlers) handlePatchConfig(w http.ResponseWriter, r *http.Request) {
 	u, ok := h.currentUser(w, r)
 	if !ok {
