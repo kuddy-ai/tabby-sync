@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.0](https://github.com/kuddy-ai/tabby-sync/compare/1.5.0...1.6.0) (2026-08-09)
+
+
+### Features
+
+* **docker:** zero-touch single-user bootstrap ([#59](https://github.com/kuddy-ai/tabby-sync/issues/59)) ([849117e](https://github.com/kuddy-ai/tabby-sync/commit/849117ebb92da9a80d8b57133bb411f375f5a2a2)), closes [#63](https://github.com/kuddy-ai/tabby-sync/issues/63)
+
 ## [1.5.0](https://github.com/kuddy-ai/tabby-sync/compare/1.4.1...1.5.0) (2026-05-20)
 
 
