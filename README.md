@@ -129,14 +129,35 @@ block merging.
 
 ## Building
 
-There is no production binary yet. When `cmd/...` packages are added,
-follow these rules:
-
 - Build with `GOFLAGS=-mod=readonly` to refuse any silent module changes
 - Strip debug symbols from production binaries: `go build -trimpath -ldflags='-s -w'`
 - Production builds must not enable debug endpoints, mock-login routes, or
   bypass tokens (see `SECURITY.md` § "生产构建规则" in
   [the prompt baseline](./AGENTS.md))
+
+### Docker image
+
+A pre-built image is published to GHCR only when a GitHub Release is created.
+Release Please keeps updating its release PR as changes land on `main`; merging
+that release PR manually creates the version and triggers the image publish.
+
+```bash
+# Pull the latest image
+docker pull ghcr.io/kuddy-ai/tabby-sync:latest
+
+# Run with a persistent data volume
+docker run -d --name tabby-sync \
+  -p 8080:8080 \
+  -v tabby-sync-data:/data \
+  ghcr.io/kuddy-ai/tabby-sync:latest
+```
+
+Each release publishes the full semver tag, the matching major/minor tag, and
+`latest`. For a specific version, use a tag such as
+`ghcr.io/kuddy-ai/tabby-sync:1.6.0`.
+
+See [`docker-compose.yml`](./docker-compose.yml) for a full-stack example
+with Caddy reverse proxy.
 
 ## Contributing
 
