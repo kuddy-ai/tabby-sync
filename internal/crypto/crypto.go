@@ -95,8 +95,8 @@ func hkdfInfo(userID int64) string {
 func BuildAAD(userID, configID int64) []byte {
 	aad := make([]byte, AADSize)
 	aad[0] = CryptoVersion
-	binary.BigEndian.PutUint64(aad[1:9], uint64(userID))
-	binary.BigEndian.PutUint64(aad[9:17], uint64(configID))
+	binary.BigEndian.PutUint64(aad[1:9], uint64(userID))    // #nosec G115 -- the canonical AAD deliberately preserves the signed ID bit pattern.
+	binary.BigEndian.PutUint64(aad[9:17], uint64(configID)) // #nosec G115 -- the canonical AAD deliberately preserves the signed ID bit pattern.
 	return aad
 }
 
@@ -163,7 +163,7 @@ func Encrypt(masterKey []byte, userID, configID int64, plaintext []byte) (cipher
 	}
 
 	aad := BuildAAD(userID, configID)
-	ciphertext = gcm.Seal(nil, nonce, plaintext, aad)
+	ciphertext = gcm.Seal(nil, nonce, plaintext, aad) // #nosec G407 -- nonce is freshly populated from crypto/rand.Reader above.
 	return ciphertext, nonce, nil
 }
 
