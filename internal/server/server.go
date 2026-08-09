@@ -91,21 +91,36 @@ func New(cfg *config.Config, logger *slog.Logger, authMW auth.Middleware, apiHan
 //  1. SecurityHeaders runs first so its headers land on EVERY response
 //     emitted by the server, including 413 from MaxBodyBytes, 500 from
 //     Recover, and any 401 written by the auth middleware.
-//  2. RequestID assigns or accepts an X-Request-Id before any logger
+//  2. CORS runs next so Access-Control-Allow-* headers land on every
+//     response too, and so an OPTIONS preflight from the Tabby desktop
+//     client's fetch() calls is answered with 204 before it ever
+//     reaches the auth middleware. A preflight never carries the real
+//     Authorization header, so gating it behind auth makes every
+//     preflight fail with 401 and no CORS headers - which the browser
+//     reports to fetch() as an opaque network error, not a 401.
+//  3. TrustedProxy substitutes the real client address in for
+//     r.RemoteAddr, taken from X-Forwarded-For, but only when the
+//     immediate TCP peer is a known-private range (i.e. the Caddy
+//     sidecar on the same Docker network). It runs before AccessLog
+//     and ratelimit, both of which read r.RemoteAddr: otherwise every
+//     access log line and every unauthenticated rate-limit bucket is
+//     keyed by the reverse proxy's container IP instead of the actual
+//     client.
+//  4. RequestID assigns or accepts an X-Request-Id before any logger
 //     reads from the context, so every subsequent log line is
 //     correlatable.
-//  3. AccessLog runs OUTSIDE Recover so it observes the final status
+//  5. AccessLog runs OUTSIDE Recover so it observes the final status
 //     code (including a 500 written by Recover when an inner handler
 //     panics) and the response size, and can attach the request id
 //     picked up from the context. AccessLog's post-handler LogAttrs
 //     call would otherwise be skipped on panic.
-//  4. Recover wraps the rest of the chain so a panic in the body-limit,
+//  6. Recover wraps the rest of the chain so a panic in the body-limit,
 //     auth, or handler layer becomes a generic 500 rather than tearing
 //     down the goroutine.
-//  5. MaxBodyBytes pre-reads the request body so handlers (including
+//  7. MaxBodyBytes pre-reads the request body so handlers (including
 //     ones that never touch r.Body) cannot be flooded with arbitrarily
 //     large payloads.
-//  6. routeAwareAuth(authMW) runs the supplied authenticator on every
+//  8. routeAwareAuth(authMW) runs the supplied authenticator on every
 //     route except a GET or HEAD request to the literal /healthz path,
 //     which is exempt so liveness probes can reach the server without
 //     an Authorization header. The bypass is deliberate: /healthz
@@ -114,8 +129,18 @@ func New(cfg *config.Config, logger *slog.Logger, authMW auth.Middleware, apiHan
 //     /healthz are still gated, so the auth-before-mux contract holds
 //     for any other verb the mux does not register.
 func buildHandler(mux http.Handler, logger *slog.Logger, authMW auth.Middleware, limiter *ratelimit.Limiter) http.Handler {
+	trustedProxy, err := middleware.TrustedProxy(nil)
+	if err != nil {
+		// nil selects middleware's own hardcoded, known-valid default
+		// CIDR list; a parse failure here is a build-time invariant
+		// violation, not a runtime condition callers can recover from.
+		panic("server: default trusted-proxy CIDRs failed to parse: " + err.Error())
+	}
+
 	mws := []middleware.Middleware{
 		middleware.SecurityHeaders(),
+		middleware.CORS(),
+		trustedProxy,
 		middleware.RequestID,
 		middleware.AccessLog(logger),
 		middleware.Recover(logger),
