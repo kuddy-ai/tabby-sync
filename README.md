@@ -137,7 +137,9 @@ block merging.
 
 ### Docker image
 
-A pre-built image is published to GHCR on every `main` push and tagged release:
+A pre-built image is published to GHCR only when a GitHub Release is created.
+Release Please keeps updating its release PR as changes land on `main`; merging
+that release PR creates the version and triggers the image publish.
 
 ```bash
 # Pull the latest image
@@ -150,7 +152,9 @@ docker run -d --name tabby-sync \
   ghcr.io/kuddy-ai/tabby-sync:latest
 ```
 
-For a specific version, use the semver tag (e.g. `ghcr.io/kuddy-ai/tabby-sync:1.5.0`).
+Each release publishes the full semver tag, the matching major/minor tag, and
+`latest`. For a specific version, use a tag such as
+`ghcr.io/kuddy-ai/tabby-sync:1.6.0`.
 
 See [`docker-compose.yml`](./docker-compose.yml) for a full-stack example
 with Caddy reverse proxy.
