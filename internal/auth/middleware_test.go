@@ -230,9 +230,9 @@ func TestBearerHeaderValueIsNeverLogged(t *testing.T) {
 	}
 }
 
-// TestBearerSchemeCaseInsensitiveMatchesRFC7235 pins the v1 review's
-// fix for issue #1: RFC 7235 §2.1 makes the auth-scheme name a token
-// compared case-insensitively, so a lenient client that normalises the
+// TestBearerSchemeCaseInsensitiveMatchesRFC7235 pins RFC 7235 §2.1: the
+// auth-scheme name is a token compared case-insensitively, so a lenient client
+// that normalises the
 // scheme to lowercase ("bearer ") or uppercase ("BEARER ") MUST still
 // authenticate. This is the regression test for any future change that
 // re-tightens the prefix check back to a byte-exact comparison.

@@ -349,8 +349,7 @@ func TestUpdateNotFound(t *testing.T) {
 
 // TestUpdateLastUsedWithVersionEmptyBecomesNull pins the documented
 // empty-string-collapses-to-NULL behaviour of UpdateConfigPatch.
-// LastUsedWithVersion. v1 semantic review issue #4 for #6 flagged the
-// mapping as ambiguous-by-omission; the test asserts that:
+// The test asserts that:
 //
 //  1. a non-nil pointer to "" overwrites a previously-set version with
 //     SQL NULL on disk and reads back as an empty Go string;
@@ -441,8 +440,7 @@ func TestDeleteNotFound(t *testing.T) {
 // catches regressions even on hosts whose default umask already yields
 // 0o600. Skipped on Windows because os.Chmod's permission bits are a
 // stub there; the chmod call in production is harmless on Windows but
-// the assertion would not be meaningful. Addresses v1 semantic review
-// issue #2 for #6.
+// the assertion would not be meaningful.
 func TestOpenTightensDBFileMode(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("file mode bits are not meaningful on Windows")
@@ -511,8 +509,7 @@ func TestOpenTightensDBFileMode(t *testing.T) {
 // well over 1ms on a typical Linux host, the production algorithm
 // only promises strictly-greater (`max(now, old + 1ms)` keeps the
 // candidate as-is when `now` is even one nanosecond past `old`), so
-// pinning ≥1ms here would be over-strict. v1 semantic review issue
-// #3 for #8 + #9 flagged this.
+// pinning ≥1ms here would be over-strict.
 func TestUpdateConfigBumpsModifiedAtOnEveryCall(t *testing.T) {
 	t.Parallel()
 

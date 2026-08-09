@@ -261,12 +261,8 @@ func (h *handlers) currentUser(w http.ResponseWriter, r *http.Request) (auth.Use
 // correlate the failed handler call against the access log and the
 // per-request RequestID; startup-time errors that DO carry paths
 // are routed through cli.runServe's path-scrubbed logger instead
-// of through writeStoreError. v2 semantic review residual #1 for
-// #8 + #9 promoted this from a documented assumption to a
-// structural property: TestWriteStoreErrorCatchAllDoesNotEchoWrappedError
-// pins the absence of the wrapped error string by feeding a
-// synthetic os.PathError-bearing wrapped error and asserting the
-// captured log line does not carry its Path.
+// of through writeStoreError. TestWriteStoreErrorCatchAllDoesNotEchoWrappedError
+// pins this structural property with a synthetic path-bearing error.
 func (h *handlers) writeStoreError(w http.ResponseWriter, r *http.Request, op string, userID, configID int64, err error) {
 	switch {
 	case errors.Is(err, store.ErrConfigNotFound):
@@ -288,10 +284,9 @@ func (h *handlers) writeStoreError(w http.ResponseWriter, r *http.Request, op st
 // has been resolved yet). The wrapped error is intentionally NOT
 // part of the attribute set: dropping it at the helper level
 // structurally prevents either branch from echoing an underlying
-// os.PathError or other path-bearing error through %w-wrapping.
-// v1 semantic review issue #8 for #8 + #9 introduced the helper;
-// v2 semantic review residual #1 for #8 + #9 dropped the err
-// parameter to enforce the no-echo property at the type level.
+// os.PathError or other path-bearing error through %w-wrapping. The helper
+// intentionally has no error parameter, enforcing the no-echo property at the
+// type level.
 func storeErrorAttrs(op string, userID, configID int64) []slog.Attr {
 	attrs := make([]slog.Attr, 0, 3)
 	attrs = append(attrs, slog.String("op", op), slog.Int64("user_id", userID))
@@ -308,11 +303,8 @@ func storeErrorAttrs(op string, userID, configID int64) []slog.Attr {
 // (`/configs/0`, `/configs/abc`) from "valid id, but not yours"
 // (`/configs/<other-user-id>`); the cross-user / missing-row path
 // already returns 404, and folding bad-id into the same shape keeps
-// the surface uniform. v1 semantic review issue #5 for #8 + #9
-// flagged the prior 400-vs-404 split as a minor disclosure. The
-// store layer continues to map any well-formed but absent id to
-// [store.ErrConfigNotFound], which writeStoreError surfaces as the
-// same 404.
+// the surface uniform. The store layer maps any well-formed but absent id to
+// [store.ErrConfigNotFound], which writeStoreError surfaces as the same 404.
 func parseConfigID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	raw := r.PathValue("id")
 	id, err := strconv.ParseInt(raw, 10, 64)

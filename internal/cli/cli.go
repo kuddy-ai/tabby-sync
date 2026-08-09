@@ -116,10 +116,9 @@ func runServe(ctx context.Context, getenv func(string) string, stderr io.Writer)
 		// path out before logging so the structured "data_dir" field
 		// stays the only place that summarises that location, and so a
 		// configured-but-broken install does not leak its on-disk
-		// layout to anyone tailing stderr. See review v1 issue #1 for
-		// #6. The master.key path is included in the scrub list as
-		// defence-in-depth so a future error from any layer that
-		// mentions it stays redacted regardless of order.
+		// layout to anyone tailing stderr. The master.key path is included
+		// in the scrub list as defence-in-depth so a future error from any
+		// layer that mentions it stays redacted regardless of order.
 		logger.Error("failed to open sqlite store",
 			slog.String("data_dir", redactPath(cfg.DataDir)),
 			slog.String("err", scrubPaths(err.Error(), dbPath, masterKeyPath, cfg.DataDir)),
@@ -255,8 +254,7 @@ func redactPath(v string) string {
 // Secrets are processed longest-first so a shorter prefix (e.g.
 // cfg.DataDir) cannot consume part of a longer secret (e.g. dbPath =
 // filepath.Join(cfg.DataDir, "tabby-sync.db")) and leave the basename
-// behind in the redacted output. v2 semantic review issue #3 for #6
-// flagged this as a defence-in-depth gap; sorting here means the call
+// behind in the redacted output. Sorting here means the call
 // site is no longer order-sensitive and a future maintainer cannot
 // reintroduce the leak by reordering arguments.
 func scrubPaths(msg string, secrets ...string) string {

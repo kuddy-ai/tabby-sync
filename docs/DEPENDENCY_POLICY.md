@@ -9,36 +9,6 @@
 - 依赖更新必须有冷却期
 - 依赖升级 PR 默认不自动合并
 
-## JS / TS / Node / Tauri
-
-默认 pnpm。
-
-建议配置：
-
-```yaml
-minimumReleaseAge: 10080
-trustPolicy: no-downgrade
-onlyBuiltDependencies: []
-ignoredBuiltDependencies: []
-```
-
-禁止自动执行 `pnpm approve-builds`。
-
-## Python
-
-默认 uv。
-
-建议配置：
-
-```toml
-[tool.uv]
-exclude-newer = "7 days"
-```
-
-## Rust
-
-提交 Cargo.lock，CI 运行 cargo audit。
-
 ## Go
 
 - 提交 `go.mod` 和 `go.sum`，禁止漏交 `go.sum`

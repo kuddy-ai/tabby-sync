@@ -131,13 +131,10 @@ func (s *UserStore) Lookup(token string) (User, error) {
 // load until they finish; new Lookups started after the swap see the
 // new snapshot.
 //
-// Operational note. Reload is API-only as of issue #7: nothing in
-// cli.runServe wires it to SIGHUP, an admin endpoint, or a file
-// watcher, so a running server is stuck on whatever snapshot it
-// loaded at startup. An operator who edits users.yml on disk MUST
-// restart the process to pick up the change. A follow-up issue will
-// land a runtime trigger; until then, callers wanting to exercise
-// Reload need to call it programmatically.
+// Reload is not wired to SIGHUP, an admin endpoint, or a file watcher.
+// A running server keeps the snapshot loaded at startup, so operators who
+// edit users.yml on disk MUST restart the process. Other package callers may
+// invoke Reload programmatically.
 func (s *UserStore) Reload(path string) error {
 	fresh, err := LoadUsersFile(path)
 	if err != nil {

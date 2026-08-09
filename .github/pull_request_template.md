@@ -14,13 +14,13 @@ Closes #
 
 如果本 PR 包含 `feat` / `fix` / `perf` / `security` / `deps` 等会进入版本日志的变更，必须填写 `BEGIN_COMMIT_OVERRIDE`。
 
-每一条会进入 CHANGELOG 的变更，标题末尾必须包含对应 Issue 的 Markdown 链接。
+每一条会进入 CHANGELOG 的变更，标题末尾必须包含对应 Issue 的普通 `#123` 引用。不要手写 Markdown 链接，release-please 会自动生成链接。
 
 请把下面示例复制到本段下方并替换真实内容：
 
 <!--
 BEGIN_COMMIT_OVERRIDE
-fix(scope): change summary ([#123](https://github.com/<owner>/<repo>/issues/123))
+fix(scope): change summary (#123)
 END_COMMIT_OVERRIDE
 -->
 

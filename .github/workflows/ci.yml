@@ -10,48 +10,14 @@ permissions:
   contents: read
 
 jobs:
-  # hashFiles() is not available in job-level if expressions. Detect manifests
-  # in a step and expose plain string outputs that downstream jobs can consume.
-  detect:
-    name: Detect project types
-    runs-on: ubuntu-latest
-    outputs:
-      js: ${{ steps.detect.outputs.js }}
-      python: ${{ steps.detect.outputs.python }}
-      rust: ${{ steps.detect.outputs.rust }}
-      go: ${{ steps.detect.outputs.go }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - name: Detect manifests
-        id: detect
-        shell: bash
-        run: |
-          detect_manifest() {
-            local output_name="$1"
-            local manifest="$2"
-            if [[ -f "$manifest" ]]; then
-              echo "$output_name=true" >> "$GITHUB_OUTPUT"
-            else
-              echo "$output_name=false" >> "$GITHUB_OUTPUT"
-            fi
-          }
-
-          detect_manifest js package.json
-          detect_manifest python pyproject.toml
-          detect_manifest rust Cargo.toml
-          detect_manifest go go.mod
-
   security-baseline:
     name: Security baseline
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Check line endings
@@ -85,106 +51,33 @@ jobs:
             ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
             detect --source . --config gitleaks.toml --redact --no-banner
 
-  js-ts:
-    name: JS / TS checks
-    needs: detect
-    runs-on: ubuntu-latest
-    if: ${{ needs.detect.outputs.js == 'true' }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - name: Enable corepack
-        run: corepack enable
-      - name: Install dependencies
-        shell: bash
-        run: |
-          if [ -f pnpm-lock.yaml ]; then pnpm install --frozen-lockfile;
-          elif [ -f package-lock.json ]; then npm ci;
-          else echo "No supported lockfile found" && exit 1; fi
-      - name: Lint
-        run: pnpm run lint --if-present || npm run lint --if-present
-      - name: Typecheck
-        run: pnpm run typecheck --if-present || npm run typecheck --if-present
-      - name: Test
-        run: pnpm run test --if-present || npm run test --if-present
-      - name: Build
-        run: pnpm run build --if-present || npm run build --if-present
-      - name: Audit
-        shell: bash
-        run: |
-          if [ -f pnpm-lock.yaml ]; then pnpm audit --audit-level moderate;
-          elif [ -f package-lock.json ]; then npm audit --audit-level=moderate; fi
-
-  python:
-    name: Python checks
-    needs: detect
-    runs-on: ubuntu-latest
-    if: ${{ needs.detect.outputs.python == 'true' }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-      - name: Install dependencies
-        run: uv sync --locked
-      - name: Ruff
-        run: uv run --with ruff ruff check .
-      - name: Tests
-        shell: bash
-        run: |
-          if [ -d tests ]; then uv run --with pytest pytest; else echo "No tests directory found; skip pytest."; fi
-      - name: pip-audit
-        run: uv run --with pip-audit pip-audit
-
-  rust:
-    name: Rust checks
-    needs: detect
-    runs-on: ubuntu-latest
-    if: ${{ needs.detect.outputs.rust == 'true' }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Format
-        run: cargo fmt --check
-      - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-      - name: Test
-        run: cargo test
-      - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
-      - name: Audit
-        run: cargo audit
-
   go:
     name: Go checks
-    needs: detect
     runs-on: ubuntu-latest
-    if: ${{ needs.detect.outputs.go == 'true' }}
     env:
       # Force module mode and refuse to mutate go.mod / go.sum during CI.
       GOFLAGS: -mod=readonly
       GOTOOLCHAIN: local
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-go@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
         with:
           # Pin the Go toolchain to whatever go.mod declares so CI cannot
           # silently drift to an unpinned "stable" version.
           go-version-file: go.mod
           check-latest: false
           cache: true
+
       - name: Verify module integrity
         run: |
           go mod download
           go mod verify
+
       - name: gofmt
         run: |
           unformatted="$(gofmt -s -l . | grep -v '^vendor/' || true)"
@@ -193,14 +86,17 @@ jobs:
             echo "$unformatted"
             exit 1
           fi
+
       - name: Vet
         run: go vet ./...
+
       - name: Test
         run: go test -race -count=1 ./...
+
       - name: Install govulncheck
-        # Pin govulncheck to a specific release to avoid pulling an
-        # unreviewed @latest into CI.
+        # Pin security tools so CI never installs an unreviewed @latest.
         run: go install golang.org/x/vuln/cmd/govulncheck@v1.3.0
+
       - name: govulncheck
         run: govulncheck ./...
 

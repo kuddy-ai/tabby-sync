@@ -120,18 +120,12 @@ window that closes once the UPDATE returns. Both surface to callers
 as `crypto.ErrDecrypt` returned UNWRAPPED (fail-closed: the wrapper
 refuses to return data it cannot authenticate).
 
-The closure for the orphan window is to wrap INSERT and UPDATE in a
-single `database/sql` transaction so the placeholder row is never
-visible to readers and self-cleans on rollback. Implementing the
-transaction requires either extending the `internal/store.Store`
-interface with a `WithTx` primitive or moving the two-step write
-inside the SQLite implementation; both are out of scope for issue
-#10. **No tracking issue has been filed yet for the transactional
-fix.** Before relying on this deferral, file an issue in the
-project tracker and replace this paragraph with a concrete `#N`
-reference; if you are reading this section because you hit an
-orphan in production and there still is no tracker, the orphan
-recovery procedure below is the only documented escape hatch.
+The closure for the orphan window is to wrap INSERT and UPDATE in a single
+`database/sql` transaction so the placeholder row is never visible to readers
+and self-cleans on rollback. The atomic implementation and deterministic
+failure tests are tracked in
+[#71](https://github.com/kuddy-ai/tabby-sync/issues/71). Until that Issue is
+closed, the orphan recovery procedure below is the documented escape hatch.
 
 ### Operator recovery for an orphan row
 
@@ -201,24 +195,19 @@ result. The policy is fail-closed:
   until the orphan is removed (see the operator recovery list
   above).
 
-Alternatives considered (no tracker filed yet for any of them;
-file one and replace this paragraph with a concrete `#N`
-reference before counting on either alternative to land):
+Alternatives that were considered for the HTTP failure shape:
 
-- **skip-and-tag**: continue iteration and return an additional
-  `[]int64` of failed configIDs alongside the successfully-decrypted
-  rows. Requires extending `EncryptedStore.ListConfigsByUserPlaintext`
-  with a richer return shape; would let the upcoming HTTP layer
-  (issue #8) surface a "n rows could not be decrypted" indicator
-  while still serving the legitimate ones.
+- **skip-and-tag**: continue iteration and return an additional `[]int64` of
+  failed config IDs alongside successfully decrypted rows. This would require
+  changing the encrypted-store and HTTP response contracts.
 - **structured failure**: return a typed error carrying the failing
   configID(s). Conflicts with the current contract that returns the
   bare `crypto.ErrDecrypt` sentinel from List, which the encrypted
   store tests pin via `errors.Is`.
 
-The fail-closed v1 policy is the conservative default; the policy
-choice for the upcoming HTTP layer (issue #8) is left to that
-issue's API design.
+The current HTTP API maps a list decryption failure to a generic 500 and returns
+no partial rows. Issue #71 keeps that fail-closed contract while removing the
+placeholder-row failure window.
 
 ## Logging Discipline
 

@@ -148,8 +148,8 @@ func TestRunServeHappyPath(t *testing.T) {
 	sentinelDataDir := t.TempDir()
 
 	// Write a real users.yml so runServe's auth.LoadUsersFile call
-	// succeeds. The fixture mirrors the deterministic one documented in
-	// the task brief: id=1, name=alice, token_prefix=tbs_test01,
+	// succeeds. The fixture is deterministic: id=1, name=alice,
+	// token_prefix=tbs_test01,
 	// token_hash=sha256("alice-token") hex-encoded, disabled=false.
 	usersDir := t.TempDir()
 	sentinelUsersFile := filepath.Join(usersDir, "users.yml")
@@ -222,16 +222,15 @@ func TestRunServeHappyPath(t *testing.T) {
 	if !strings.Contains(logs, "starting tabby-sync") {
 		t.Errorf("logs missing 'starting tabby-sync':\n%s", logs)
 	}
-	// v1 review issue #7: the happy path must emit a structured
-	// "users file loaded" log line so an operator can confirm the
-	// users.yml was consumed without the line ever naming a user.
+	// The happy path must emit a structured "users file loaded" log line so an
+	// operator can confirm users.yml was consumed without naming a user.
 	// Pinning this string here means a regression that dropped the
 	// log call (or renamed the message) would surface immediately.
 	if !strings.Contains(logs, `"msg":"users file loaded"`) {
 		t.Errorf("logs missing 'users file loaded' line:\n%s", logs)
 	}
-	// v1 review issue #7: the load path must NOT log user names. The
-	// fixture loads exactly one user named "alice"; a regression that
+	// The load path must NOT log user names. The fixture loads exactly one user
+	// named "alice"; a regression that
 	// started logging the name (or any user-identifying field other
 	// than the count) would land "alice" in the captured stderr.
 	if strings.Contains(logs, "alice") {
@@ -437,11 +436,9 @@ func TestRunServeMasterKeyWrongLength(t *testing.T) {
 		t.Errorf("logs missing provider=file field:\n%s", logs)
 	}
 
-	// v1 review issue #6 for #10: tighten the no-leak assertion. The
-	// previous shape softened the redaction check with t.Logf, which
-	// meant a regression that started leaking the data-dir path or
-	// the seeded key bytes (without also leaking masterKeyPath
-	// verbatim) would silently slip through. The contract now is:
+	// Keep the no-leak assertions strict so a regression that exposes the
+	// data-dir path or seeded key bytes cannot silently slip through. The
+	// contract is:
 	// path-absence (authoritative) AND no other suspicious substring,
 	// where "<redacted>" presence is asserted only when the wrapped
 	// error actually had something to redact.
@@ -482,10 +479,9 @@ func waitForLog(buf *safeBuffer, needle string, total time.Duration) bool {
 // TestRunServeStoreOpenFailureRedactsPath provokes a deterministic
 // sqlite.Open failure by pointing TABBY_SYNC_DATA_DIR at a regular file
 // (so MkdirAll's "not a directory" error fires synchronously) and then
-// asserts the resulting log line never echoes that path verbatim. This
-// is the regression test for v1 review issue #1: wrapped errors from
-// sqlite.Open used to leak the absolute path, defeating the redactPath
-// field on the same log line.
+// asserts the resulting log line never echoes that path verbatim. Wrapped
+// errors from sqlite.Open must not leak the absolute path or defeat the
+// redactPath field on the same log line.
 func TestRunServeStoreOpenFailureRedactsPath(t *testing.T) {
 	t.Parallel()
 
@@ -525,8 +521,7 @@ func TestRunServeStoreOpenFailureRedactsPath(t *testing.T) {
 	if strings.Contains(logs, dbPath) {
 		t.Errorf("logs leaked DB file path (%q):\n%s", dbPath, logs)
 	}
-	// Defence-in-depth against v2 review issue #3 for #6: even the
-	// basename of the DB file must not survive the scrub. dataDir is a
+	// Even the basename of the DB file must not survive the scrub. dataDir is a
 	// strict prefix of dbPath, so a future ordering regression in
 	// scrubPaths (substituting the shorter prefix first) would leave
 	// "<redacted>/tabby-sync.db" in the output and pass the two

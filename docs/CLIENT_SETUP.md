@@ -1,93 +1,84 @@
-# Client Setup
+# Tabby Client Setup
 
-This guide explains how to configure [Tabby Terminal](https://tabby.sh) to
-sync settings with your self-hosted tabby-sync instance.
+This guide was verified against Tabby 1.0.235. Tabby UI wording may change in
+later releases; the API paths remain documented in [`API.md`](./API.md).
 
 ## Prerequisites
 
-- Tabby Terminal installed (version 1.0.197+ recommended)
-- A running tabby-sync instance accessible via HTTPS
-- A Bearer token provided by your administrator
+- A current Tabby desktop release
+- A tabby-sync endpoint with a certificate trusted by the operating system
+- The full `tbs_...` token supplied by the administrator
 
-## Configuration Steps
+Tabby refuses plaintext config-sync hosts. The URL must begin with `https://`.
 
-### 1. Open Tabby Settings
+## Configure the connection
 
-Launch Tabby and navigate to: **Settings → Config Sync**
+1. Open **Settings → Config sync**.
+2. Enter the sync host, for example `https://sync.example.com`.
+   Do not add `/api/1`; Tabby appends it. A trailing slash is normalized by the
+   client, but omitting it keeps the value unambiguous.
+3. Paste the full value into **Secret sync token**.
+4. Wait for the connection indicator to turn successful. Tabby verifies the
+   token with `GET /api/1/user` and loads the remote config list.
 
-### 2. Set the Sync Host
+## Select the first sync direction
 
-Enter your tabby-sync instance URL:
+The client is not enabled until a remote config ID is selected. Choose one of
+these explicit first-sync actions:
 
-```
-https://sync.example.com
-```
+- **Upload as a new config**: creates a remote row and uploads the local config.
+- **Upload/Replace** on an existing row: overwrites that remote config with the
+  current local config.
+- **Download** on an existing row: overwrites the local config with the remote
+  content.
 
-Do **not** include a trailing slash or the `/api/1/` path — Tabby appends
-the API prefix automatically.
+Read the confirmation dialog carefully; upload and download intentionally have
+opposite overwrite directions.
 
-### 3. Set the Token
+After a row is active, enable **Sync automatically**. Local config changes are
+uploaded promptly. Tabby checks the remote `modified_at` value once per minute
+and downloads when it observes a newer semantic config change.
 
-Paste the Bearer token your administrator provided. This is the full
-token string (not just the prefix shown in `users.yml`).
+## Multiple devices
 
-The token is displayed only once when the administrator creates your
-account. If you've lost it, ask for a token rotation.
+Devices for the same user can use the same token and select the same remote
+config ID. The server preserves `modified_at` for byte-identical name/content
+uploads, which prevents an applied remote change from causing an endless
+download/reapply/upload loop.
 
-### 4. Enable Sync
-
-Toggle the sync switch to **On**. Tabby will immediately attempt to
-connect and pull your configuration.
-
-### 5. Verify
-
-After enabling sync, check that:
-
-- The sync status shows "Connected" or similar
-- Your configs appear in the sync list
-- Changes made on one device appear on others after a few seconds
-
-## How Sync Works
-
-1. **Initial sync**: Tabby creates a config entry via `POST /api/1/configs`
-2. **Ongoing**: On each settings change, Tabby sends the full config via
-   `PATCH /api/1/configs/{id}`
-3. **Pull**: On startup, Tabby fetches the latest config via
-   `GET /api/1/configs/{id}` and compares `modified_at`
-4. **Conflict resolution**: Last-write-wins based on `modified_at` timestamp
-
-## Multiple Devices
-
-Each device uses the **same token** and syncs against the same config entry.
-When you change settings on Device A, Device B picks up the change on its
-next sync cycle (typically within seconds if Tabby is running).
+Concurrent real edits are last-write-wins. tabby-sync does not merge conflicting
+YAML structures or retain config history.
 
 ## Troubleshooting
 
-| Symptom | Solution |
-|---------|----------|
-| "Unauthorized" or 401 error | Verify your token is correct and not disabled |
-| "Connection refused" | Check that the sync URL is reachable from your network |
-| "Certificate error" | Ensure the server has valid TLS (or add an exception for self-signed certs in development) |
-| Sync not updating | Check if the server is healthy: `curl https://sync.example.com/healthz` |
-| "Rate limit exceeded" | You're syncing too frequently; wait a minute and retry |
+| Symptom | Check |
+| --- | --- |
+| Connection fails with 401 | Confirm the full token, user status, and that the server was restarted after token changes. |
+| Host is rejected | Use `https://`; current Tabby clients reject plaintext HTTP. |
+| Certificate error | Install a certificate trusted by the OS/Electron runtime; an untrusted self-signed certificate is not a production setup. |
+| No configs appear | Verify the token, then query `GET /api/1/configs` with the same credentials. |
+| Remote changes seem delayed | Automatic remote polling runs once every 60 seconds. |
+| HTTP 429 | Wait for the `Retry-After` period and check for a runaway sync loop. |
+| Repeated remote-change messages | Confirm the server is version 1.7.0 or newer and contains the idempotent PATCH fix tracked in Issue #62. |
 
-## Security Notes
+The unauthenticated liveness check is `GET https://sync.example.com/healthz` and
+returns `ok`. It does not verify database decryption or the supplied user token.
 
-- Your token is a secret. Do not share it or commit it to version control.
-- The sync server encrypts your config at rest, but the server operator
-  can see your config in memory during API calls.
-- Do not store highly sensitive secrets (SSH keys, passwords) directly in
-  your Tabby config. Use references or environment variables instead.
-- Only use a tabby-sync instance you trust. Do not connect to instances
-  operated by unknown third parties.
+## Token rotation
 
-## Token Rotation
+1. Run `tabby-sync user rotate <name-or-id>` with the same runtime paths used by
+   the server.
+2. Save the new token immediately; it is shown once.
+3. Restart tabby-sync so it reloads `users.yml`.
+4. Replace the token on every device.
 
-If you suspect your token has been compromised:
+The old token remains accepted by an already-running process until step 3. After
+the restart, the old token returns 401.
 
-1. Contact your administrator
-2. They will run `tabby-sync user rotate <your-name>`
-3. You'll receive a new token (shown only once)
-4. Update the token in Tabby Settings → Config Sync
-5. The old token is immediately invalidated
+## Security notes
+
+- Treat the token as a password and never paste it into Issues or logs.
+- The server encrypts data at rest but processes plaintext in memory.
+- Use only a server and TLS endpoint you trust.
+- Avoid embedding high-value private keys or passwords directly in the synced
+  Tabby configuration.

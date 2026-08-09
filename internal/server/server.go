@@ -31,8 +31,8 @@ const (
 	defaultShutdownTimeout   = 10 * time.Second
 
 	// defaultMaxHeaderBytes caps the size of inbound request headers.
-	// 1 MiB is far above what tabby-sync's own clients send and matches
-	// the request body cap enforced by middleware.MaxBodyBytes.
+	// 1 MiB is far above what tabby-sync's own clients send. Request bodies
+	// have a separate 2 MiB cap enforced by middleware.MaxBodyBytes.
 	defaultMaxHeaderBytes = 1 << 20
 )
 

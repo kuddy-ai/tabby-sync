@@ -51,15 +51,15 @@ Fixes: #123
 
 这些 footer 用于 commit 审计和追踪。
 
-如果项目使用 release-please，不能只依赖 commit footer 生成 CHANGELOG Issue 链接。每个会进入 release notes 的 PR 必须在 PR 描述中提供 `BEGIN_COMMIT_OVERRIDE`。
+本项目使用 release-please，不能只依赖 commit footer 生成 CHANGELOG Issue 链接。每个会进入 release notes 的 PR 必须在 PR 描述中提供 `BEGIN_COMMIT_OVERRIDE`。
 
-`BEGIN_COMMIT_OVERRIDE` 中每条 `feat` / `fix` / `perf` / `security` / `deps` 变更，标题末尾必须包含对应 Issue 的 Markdown 链接：
+`BEGIN_COMMIT_OVERRIDE` 中每条 `feat` / `fix` / `perf` / `security` / `deps` 变更，标题末尾必须包含对应 Issue 的普通引用。不要手写 Markdown 链接，release-please 会为 `#123` 生成链接：
 
 ```text
 BEGIN_COMMIT_OVERRIDE
-feat(scope): add feature ([#123](https://github.com/<owner>/<repo>/issues/123))
+feat(scope): add feature (#123)
 
-fix(scope): repair bug ([#124](https://github.com/<owner>/<repo>/issues/124))
+fix(scope): repair bug (#124)
 END_COMMIT_OVERRIDE
 ```
 
@@ -80,8 +80,8 @@ PR 必须包含：
 - 测试说明
 - 安全影响说明
 - 回滚方案，若适用
-- 如果项目使用 release-please，必须填写 `BEGIN_COMMIT_OVERRIDE`
-- 每条进入 CHANGELOG 的 `feat` / `fix` / `perf` / `security` / `deps` 变更必须带 Issue Markdown 链接
+- 必须填写 `BEGIN_COMMIT_OVERRIDE`，或明确说明该 PR 不进入 release notes
+- 每条进入 CHANGELOG 的 `feat` / `fix` / `perf` / `security` / `deps` 变更必须带普通 Issue 引用
 
 PR 标题必须遵守 Conventional Commits。
 
@@ -95,7 +95,7 @@ release-please override 示例：
 
 ```text
 BEGIN_COMMIT_OVERRIDE
-fix(auth): mask access token in logs ([#123](https://github.com/<owner>/<repo>/issues/123))
+fix(auth): mask access token in logs (#123)
 END_COMMIT_OVERRIDE
 ```
 
@@ -115,5 +115,5 @@ Windows：
 
 ## AI 参与开发规则
 
-AI 必须遵守 `AGENTS.md`。  
+AI 必须遵守 `AGENTS.md`。
 AI 不得自动新增依赖、修改 CI 权限、跳过测试、安全扫描或发布制品。

@@ -1,6 +1,6 @@
 name: Bug
-about: 缺陷修复
-labels: [fix]
+description: 报告可以稳定复现的缺陷
+labels: [bug]
 body:
   - type: textarea
     id: problem

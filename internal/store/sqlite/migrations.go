@@ -187,9 +187,8 @@ func applyMigration(ctx context.Context, db *sql.DB, m migration) (err error) {
 // The splitter is intentionally simple: tabby-sync's migrations are
 // plain DDL with no string literals containing semicolons, no
 // triggers, no procedural blocks, and no `--` line comments containing
-// semicolons. v1 semantic review issue #3 for #6 flagged that this
-// splitter will mis-attribute statements the moment one of those
-// constructs lands; migrations/README.md documents the constraint at
+// semicolons. The splitter will mis-attribute statements the moment one of
+// those constructs lands; migrations/README.md documents the constraint at
 // the place where new migrations actually get authored. Do not add a
 // migration that violates the constraint without upgrading this
 // helper to a real SQL tokenizer first.

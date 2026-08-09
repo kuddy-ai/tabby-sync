@@ -30,7 +30,6 @@ logs/
 dist/
 build/
 out/
-target/
 coverage/
 
 # Go build artifacts
@@ -47,14 +46,16 @@ bin/
 go.work
 go.work.sum
 
-# Dependency folders
-node_modules/
-.venv/
-venv/
-__pycache__/
-.pytest_cache/
-.ruff_cache/
-.mypy_cache/
+# tabby-sync runtime state (contains encrypted user data or credential hashes)
+/data/
+/var/tabby-sync/
+users.yml
+users.yml.tmp
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+/backups/
 
 # Local temp
 .tmp/

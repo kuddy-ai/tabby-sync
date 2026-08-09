@@ -10,11 +10,9 @@
 //
 // Reload contract. [UserStore.Reload] swaps the live snapshot
 // atomically and is safe to call concurrently with [UserStore.Lookup].
-// The hook is API-only as of issue #7: cli.runServe does NOT wire it
-// to SIGHUP, an admin endpoint, or a file watcher, so a running
-// server is stuck on whatever snapshot it loaded at startup and an
-// operator must restart the process to pick up users.yml edits. A
-// follow-up issue will introduce a runtime trigger.
+// cli.runServe does not wire the hook to SIGHUP, an admin endpoint, or a file
+// watcher. A running server therefore keeps the startup snapshot and operators
+// must restart the process after editing users.yml.
 //
 // Hash choice rationale. Tokens stored in users.yml are server-issued
 // opaque secrets with at least 128 bits of entropy; they are not
@@ -59,7 +57,7 @@ type User struct {
 	// middleware to attribute requests; it MUST NOT be a secret.
 	Name string
 	// TokenPrefix is a short, human-readable fragment of the token
-	// (typically the first ~8 characters of a tbs_-prefixed token)
+	// (the CLI stores the first 12 characters of generated tokens)
 	// used by operators to identify a credential without revealing
 	// it. It is NEVER logged on the failure path.
 	TokenPrefix string

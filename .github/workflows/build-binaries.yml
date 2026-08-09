@@ -46,13 +46,54 @@ jobs:
           check-latest: false
           cache: true
 
+      - name: Resolve build metadata
+        id: metadata
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_DATE: ${{ github.event.release.published_at }}
+        run: |
+          version=0.0.0-dev
+          build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          if [[ "$GITHUB_EVENT_NAME" == "release" ]]; then
+            version="$RELEASE_TAG"
+            build_date="$RELEASE_DATE"
+          fi
+
+          {
+            echo "version=$version"
+            echo "commit=$GITHUB_SHA"
+            echo "date=$build_date"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build
         env:
           CGO_ENABLED: "0"
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
+          MODULE: github.com/kuddy-ai/tabby-sync
+          BUILD_VERSION: ${{ steps.metadata.outputs.version }}
+          BUILD_COMMIT: ${{ steps.metadata.outputs.commit }}
+          BUILD_DATE: ${{ steps.metadata.outputs.date }}
         run: |
-          go build -trimpath -ldflags='-s -w' -o "dist/${{ matrix.output }}" ./cmd/tabby-sync
+          go build -trimpath \
+            -ldflags="-s -w \
+            -X ${MODULE}/internal/version.Version=${BUILD_VERSION} \
+            -X ${MODULE}/internal/version.Commit=${BUILD_COMMIT} \
+            -X ${MODULE}/internal/version.Date=${BUILD_DATE}" \
+            -o "dist/${{ matrix.output }}" ./cmd/tabby-sync
+
+      - name: Verify build identity
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        env:
+          BUILD_VERSION: ${{ steps.metadata.outputs.version }}
+          BUILD_COMMIT: ${{ steps.metadata.outputs.commit }}
+        run: |
+          output="$(./dist/${{ matrix.output }} version)"
+          echo "$output"
+          grep -F -- "$BUILD_VERSION" <<< "$output"
+          grep -F -- "$BUILD_COMMIT" <<< "$output"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
