@@ -104,7 +104,7 @@ var hashPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 // path scrubbing on top (cli.runServe) further substitute the configured
 // users-file path out of the error string before logging.
 func LoadUsersFile(path string) (*UserStore, error) {
-	raw, err := os.ReadFile(path) //nolint:gosec // path comes from the env-validated config; loader does not echo it.
+	raw, err := os.ReadFile(path) // #nosec G304 -- path comes from the env-validated config; loader does not echo it.
 	if err != nil {
 		// os.ReadFile returns a *fs.PathError whose Error() echoes the
 		// path verbatim. We strip the path out by wrapping only the

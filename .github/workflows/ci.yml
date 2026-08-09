@@ -10,6 +10,41 @@ permissions:
   contents: read
 
 jobs:
+  # hashFiles() is not available in job-level if expressions. Detect manifests
+  # in a step and expose plain string outputs that downstream jobs can consume.
+  detect:
+    name: Detect project types
+    runs-on: ubuntu-latest
+    outputs:
+      js: ${{ steps.detect.outputs.js }}
+      python: ${{ steps.detect.outputs.python }}
+      rust: ${{ steps.detect.outputs.rust }}
+      go: ${{ steps.detect.outputs.go }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Detect manifests
+        id: detect
+        shell: bash
+        run: |
+          detect_manifest() {
+            local output_name="$1"
+            local manifest="$2"
+            if [[ -f "$manifest" ]]; then
+              echo "$output_name=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "$output_name=false" >> "$GITHUB_OUTPUT"
+            fi
+          }
+
+          detect_manifest js package.json
+          detect_manifest python pyproject.toml
+          detect_manifest rust Cargo.toml
+          detect_manifest go go.mod
+
   security-baseline:
     name: Security baseline
     runs-on: ubuntu-latest
@@ -42,14 +77,19 @@ jobs:
           exit $failed
 
       - name: Gitleaks scan
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --volume "$GITHUB_WORKSPACE:/repo:ro" \
+            --workdir /repo \
+            ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
+            detect --source . --config gitleaks.toml --redact --no-banner
 
   js-ts:
     name: JS / TS checks
+    needs: detect
     runs-on: ubuntu-latest
-    if: ${{ hashFiles('package.json') != '' }}
+    if: ${{ needs.detect.outputs.js == 'true' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -81,8 +121,9 @@ jobs:
 
   python:
     name: Python checks
+    needs: detect
     runs-on: ubuntu-latest
-    if: ${{ hashFiles('pyproject.toml') != '' }}
+    if: ${{ needs.detect.outputs.python == 'true' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -102,8 +143,9 @@ jobs:
 
   rust:
     name: Rust checks
+    needs: detect
     runs-on: ubuntu-latest
-    if: ${{ hashFiles('Cargo.toml') != '' }}
+    if: ${{ needs.detect.outputs.rust == 'true' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -121,8 +163,9 @@ jobs:
 
   go:
     name: Go checks
+    needs: detect
     runs-on: ubuntu-latest
-    if: ${{ hashFiles('go.mod') != '' }}
+    if: ${{ needs.detect.outputs.go == 'true' }}
     env:
       # Force module mode and refuse to mutate go.mod / go.sum during CI.
       GOFLAGS: -mod=readonly

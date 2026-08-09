@@ -245,7 +245,10 @@ func runUserRm(args []string, getenv func(string) string, stdout, stderr io.Writ
 		fmt.Fprintf(stdout, "about to remove user %s (id=%d). This cannot be undone.\n", removed.Name, removed.ID)
 		fmt.Fprint(stdout, "Continue? [y/N] ")
 		var answer string
-		fmt.Fscanln(os.Stdin, &answer)
+		if _, err := fmt.Fscanln(os.Stdin, &answer); err != nil {
+			fmt.Fprintln(stdout, "aborted.")
+			return 0
+		}
 		if strings.ToLower(strings.TrimSpace(answer)) != "y" {
 			fmt.Fprintln(stdout, "aborted.")
 			return 0
@@ -430,7 +433,7 @@ func resolveUsersFile(getenv func(string) string) string {
 }
 
 func loadUsersYAML(path string) (*usersFileSchema, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- reading the operator-selected users file is the purpose of this CLI command.
 	if err != nil {
 		return nil, fmt.Errorf("cannot read users file: %w", err)
 	}

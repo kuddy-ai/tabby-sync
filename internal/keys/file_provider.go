@@ -85,7 +85,7 @@ func (p *FileProvider) generate() ([]byte, error) {
 	// fatal because os.MkdirAll succeeded; we still want the key
 	// file's 0o600 to land. The cli layer never logs the directory
 	// path so this stays consistent with the no-leak contract.
-	_ = os.Chmod(dir, 0o700)
+	_ = os.Chmod(dir, 0o700) // #nosec G302 -- directories require execute bits; 0700 is owner-only.
 
 	key := make([]byte, MasterKeySize)
 	if _, err := io.ReadFull(rand.Reader, key); err != nil {

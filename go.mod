@@ -1,6 +1,6 @@
 module github.com/kuddy-ai/tabby-sync
 
-go 1.25.0
+go 1.25.12
 
 // gopkg.in/check.v1 appears in go.sum but NOT in go.mod's require
 // block: it is a test-only transitive of gopkg.in/yaml.v3 (see

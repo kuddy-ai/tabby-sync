@@ -425,6 +425,7 @@ func (s *Store) UpdateConfig(ctx context.Context, userID, configID int64, patch 
 
 	args = append(args, configID, userID)
 
+	// #nosec G202 -- setClauses contains only the hardcoded column fragments above; all values remain parameterized.
 	stmt := "UPDATE configs SET " + strings.Join(setClauses, ", ") + " WHERE id = ? AND user_id = ?"
 
 	if _, err := tx.ExecContext(ctx, stmt, args...); err != nil {
