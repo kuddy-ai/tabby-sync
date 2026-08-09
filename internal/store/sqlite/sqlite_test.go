@@ -646,6 +646,90 @@ func TestUpdateConfigBumpsModifiedAtEvenWithEmptyPatch(t *testing.T) {
 	}
 }
 
+func TestUpdateConfigPreservesModifiedAtForMetadataOnlyCAS(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	st, err := sqlite.Open(ctx, newDBPath(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+
+	created, err := st.CreateConfig(ctx, 21, store.CreateConfigInput{
+		Name:                "metadata",
+		ContentCiphertext:   []byte{0x01},
+		ContentNonce:        []byte{0x02},
+		LastUsedWithVersion: "1.0.234",
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig: %v", err)
+	}
+	version := "1.0.235"
+	expected := created.ModifiedAt
+	updated, err := st.UpdateConfig(ctx, 21, created.ID, store.UpdateConfigPatch{
+		LastUsedWithVersion: &version,
+		PreserveModifiedAt:  true,
+		ExpectedModifiedAt:  &expected,
+	})
+	if err != nil {
+		t.Fatalf("metadata-only UpdateConfig: %v", err)
+	}
+	if !updated.ModifiedAt.Equal(created.ModifiedAt) {
+		t.Errorf("ModifiedAt changed: before=%v after=%v", created.ModifiedAt, updated.ModifiedAt)
+	}
+	if updated.LastUsedWithVersion != version {
+		t.Errorf("LastUsedWithVersion = %q; want %q", updated.LastUsedWithVersion, version)
+	}
+}
+
+func TestUpdateConfigPreserveModifiedAtRejectsStaleCAS(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	st, err := sqlite.Open(ctx, newDBPath(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+
+	created, err := st.CreateConfig(ctx, 22, store.CreateConfigInput{
+		Name:                "before",
+		ContentCiphertext:   []byte{0x01},
+		ContentNonce:        []byte{0x02},
+		LastUsedWithVersion: "1.0.234",
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig: %v", err)
+	}
+	concurrentName := "concurrent"
+	concurrent, err := st.UpdateConfig(ctx, 22, created.ID, store.UpdateConfigPatch{Name: &concurrentName})
+	if err != nil {
+		t.Fatalf("concurrent UpdateConfig: %v", err)
+	}
+
+	version := "1.0.235"
+	expected := created.ModifiedAt
+	_, err = st.UpdateConfig(ctx, 22, created.ID, store.UpdateConfigPatch{
+		LastUsedWithVersion: &version,
+		PreserveModifiedAt:  true,
+		ExpectedModifiedAt:  &expected,
+	})
+	if !errors.Is(err, store.ErrConfigChanged) {
+		t.Fatalf("stale metadata update err = %v; want ErrConfigChanged", err)
+	}
+	got, err := st.GetConfig(ctx, 22, created.ID)
+	if err != nil {
+		t.Fatalf("GetConfig: %v", err)
+	}
+	if got.Name != concurrentName || !got.ModifiedAt.Equal(concurrent.ModifiedAt) {
+		t.Errorf("stale CAS mutated concurrent state: got=%+v", got)
+	}
+	if got.LastUsedWithVersion != created.LastUsedWithVersion {
+		t.Errorf("stale CAS changed version: got %q want %q", got.LastUsedWithVersion, created.LastUsedWithVersion)
+	}
+}
+
 // TestModifiedAtRoundTripsThroughRFC3339 pins that the on-disk
 // modified_at format (RFC3339Nano) parses cleanly with both
 // time.RFC3339Nano and the stricter time.RFC3339, so typical clients

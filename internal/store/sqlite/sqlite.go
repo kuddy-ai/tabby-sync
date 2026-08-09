@@ -346,14 +346,12 @@ func (s *Store) ListConfigsByUser(ctx context.Context, userID int64) ([]store.Co
 // ContentCiphertext / ContentNonce is set is reported as
 // [store.ErrInvalidPatch] and the row is left untouched.
 //
-// ModifiedAt is bumped on every successful update, even if no other
-// column changed value, AND is strictly greater than the row's prior
-// ModifiedAt: the new value is computed as max(now, old + 1ms) inside
-// a single BEGIN IMMEDIATE transaction so successive rapid updates
-// always strictly advance, and so a backwards-jumping wall clock
-// degrades gracefully to old + 1ms instead of writing a regressed
-// timestamp. Per-row monotonicity is required by issue #9 for clients
-// to safely diff-by-modified_at without losing edits.
+// ModifiedAt is normally bumped on every successful update, even if no
+// other column changed value, and is strictly greater than the row's prior
+// ModifiedAt. The encrypted-store idempotency path can instead request a
+// metadata-only PreserveModifiedAt update guarded by ExpectedModifiedAt.
+// That compare-and-set runs inside the same BEGIN IMMEDIATE transaction;
+// a mismatch returns [store.ErrConfigChanged] without mutating the row.
 func (s *Store) UpdateConfig(ctx context.Context, userID, configID int64, patch store.UpdateConfigPatch) (store.Config, error) {
 	hasCipher := len(patch.ContentCiphertext) > 0
 	hasNonce := len(patch.ContentNonce) > 0
@@ -361,6 +359,13 @@ func (s *Store) UpdateConfig(ctx context.Context, userID, configID int64, patch 
 		// Reject the patch BEFORE acquiring a write lock so an invalid
 		// patch never even opens a transaction.
 		return store.Config{}, fmt.Errorf("%w: ciphertext and nonce must be set together", store.ErrInvalidPatch)
+	}
+	if patch.PreserveModifiedAt {
+		if patch.ExpectedModifiedAt == nil || patch.Name != nil || hasCipher {
+			return store.Config{}, fmt.Errorf("%w: preserve-modified-at requires expected timestamp and metadata-only patch", store.ErrInvalidPatch)
+		}
+	} else if patch.ExpectedModifiedAt != nil {
+		return store.Config{}, fmt.Errorf("%w: expected timestamp requires preserve-modified-at", store.ErrInvalidPatch)
 	}
 
 	// The Open DSN sets `_txlock=immediate` so this BeginTx emits
@@ -398,17 +403,23 @@ func (s *Store) UpdateConfig(ctx context.Context, userID, configID int64, patch 
 		return store.Config{}, fmt.Errorf("sqlite: parse old modified_at: %w", err)
 	}
 
-	candidate := nowFn().UTC()
-	if !candidate.After(old) {
-		// Wall clock did not advance (or jumped backwards). Step
-		// strictly past the row's existing modified_at by exactly 1ms
-		// so subsequent reads still see strictly-monotonic timestamps.
-		candidate = old.Add(time.Millisecond)
+	if patch.PreserveModifiedAt && !old.Equal(patch.ExpectedModifiedAt.UTC()) {
+		return store.Config{}, store.ErrConfigChanged
 	}
-	newModifiedAt := candidate.Format(time.RFC3339Nano)
 
-	setClauses := []string{"modified_at = ?"}
-	args := []any{newModifiedAt}
+	setClauses := make([]string, 0, 4)
+	args := make([]any, 0, 6)
+	if !patch.PreserveModifiedAt {
+		candidate := nowFn().UTC()
+		if !candidate.After(old) {
+			// Wall clock did not advance (or jumped backwards). Step
+			// strictly past the row's existing modified_at by exactly 1ms
+			// so subsequent reads still see strictly-monotonic timestamps.
+			candidate = old.Add(time.Millisecond)
+		}
+		setClauses = append(setClauses, "modified_at = ?")
+		args = append(args, candidate.Format(time.RFC3339Nano))
+	}
 
 	if patch.Name != nil {
 		setClauses = append(setClauses, "name = ?")
@@ -423,19 +434,20 @@ func (s *Store) UpdateConfig(ctx context.Context, userID, configID int64, patch 
 		args = append(args, nullIfEmpty(*patch.LastUsedWithVersion))
 	}
 
-	args = append(args, configID, userID)
-
-	// #nosec G202 -- setClauses contains only the hardcoded column fragments above; all values remain parameterized.
-	stmt := "UPDATE configs SET " + strings.Join(setClauses, ", ") + " WHERE id = ? AND user_id = ?"
-
-	if _, err := tx.ExecContext(ctx, stmt, args...); err != nil {
-		return store.Config{}, fmt.Errorf("sqlite: update config: %w", err)
+	if len(setClauses) > 0 {
+		args = append(args, configID, userID)
+		// #nosec G202 -- setClauses contains only the hardcoded column fragments above; all values remain parameterized.
+		stmt := "UPDATE configs SET " + strings.Join(setClauses, ", ") + " WHERE id = ? AND user_id = ?"
+		if _, err := tx.ExecContext(ctx, stmt, args...); err != nil {
+			return store.Config{}, fmt.Errorf("sqlite: update config: %w", err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return store.Config{}, fmt.Errorf("sqlite: commit update: %w", err)
 	}
-	// Re-load via GetConfig outside the transaction; the new
-	// modified_at is already persisted, so a stale read is impossible.
+	// Re-load via GetConfig outside the transaction. A later concurrent
+	// writer may already be visible here, which is acceptable: callers
+	// receive at least the state whose conditional update just committed.
 	return s.GetConfig(ctx, userID, configID)
 }
 

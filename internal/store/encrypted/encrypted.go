@@ -15,6 +15,7 @@
 package encrypted
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -212,30 +213,66 @@ func (s *Store) ListConfigsByUserPlaintext(ctx context.Context, userID int64) ([
 	return out, nil
 }
 
-// UpdateConfigPlaintext applies the non-nil/non-empty fields of patch
-// to the row identified by configID. When patch.Content is non-nil
-// the wrapper re-encrypts under the same (userID, configID) AAD with
-// a fresh random nonce; a non-nil pointer to an empty slice is a
-// valid plaintext (the resulting ciphertext is just the GCM auth
-// tag) and is NOT treated as a no-op. The freshly-loaded row is
-// returned with its plaintext re-attached.
+// UpdateConfigPlaintext applies the non-nil fields of patch to the row
+// identified by configID. Name and plaintext content are compared before
+// encryption so a semantically identical PATCH preserves the ciphertext,
+// nonce and ModifiedAt. A last-used-version-only change is persisted as
+// metadata without advancing ModifiedAt.
+//
+// The no-op path uses an optimistic ModifiedAt check in the underlying
+// store. If a real update lands after the comparison, ErrConfigChanged
+// causes the wrapper to reload and re-evaluate the caller's patch instead
+// of accidentally swallowing that concurrent change. See issue #62.
 func (s *Store) UpdateConfigPlaintext(ctx context.Context, userID, configID int64, patch store.UpdateConfigPlaintextPatch) (store.ConfigWithPlaintext, error) {
-	innerPatch := store.UpdateConfigPatch{
-		Name:                patch.Name,
-		LastUsedWithVersion: patch.LastUsedWithVersion,
-	}
-	if patch.Content != nil {
-		ct, nonce, err := crypto.Encrypt(s.masterKey, userID, configID, *patch.Content)
-		if err != nil {
-			return store.ConfigWithPlaintext{}, fmt.Errorf("encrypted: encrypt update: %w", err)
+	for {
+		if err := ctx.Err(); err != nil {
+			return store.ConfigWithPlaintext{}, err
 		}
-		innerPatch.ContentCiphertext = ct
-		innerPatch.ContentNonce = nonce
+
+		current, err := s.GetConfigPlaintext(ctx, userID, configID)
+		if err != nil {
+			return store.ConfigWithPlaintext{}, err
+		}
+
+		nameChanged := patch.Name != nil && *patch.Name != current.Name
+		contentChanged := patch.Content != nil && !bytes.Equal(*patch.Content, current.Content)
+		if nameChanged || contentChanged {
+			innerPatch := store.UpdateConfigPatch{
+				LastUsedWithVersion: patch.LastUsedWithVersion,
+			}
+			if nameChanged {
+				innerPatch.Name = patch.Name
+			}
+			if contentChanged {
+				ct, nonce, err := crypto.Encrypt(s.masterKey, userID, configID, *patch.Content)
+				if err != nil {
+					return store.ConfigWithPlaintext{}, fmt.Errorf("encrypted: encrypt update: %w", err)
+				}
+				innerPatch.ContentCiphertext = ct
+				innerPatch.ContentNonce = nonce
+			}
+			if _, err := s.inner.UpdateConfig(ctx, userID, configID, innerPatch); err != nil {
+				return store.ConfigWithPlaintext{}, err
+			}
+			return s.GetConfigPlaintext(ctx, userID, configID)
+		}
+
+		expected := current.ModifiedAt
+		innerPatch := store.UpdateConfigPatch{
+			PreserveModifiedAt: true,
+			ExpectedModifiedAt: &expected,
+		}
+		if patch.LastUsedWithVersion != nil && *patch.LastUsedWithVersion != current.LastUsedWithVersion {
+			innerPatch.LastUsedWithVersion = patch.LastUsedWithVersion
+		}
+		if _, err := s.inner.UpdateConfig(ctx, userID, configID, innerPatch); err != nil {
+			if errors.Is(err, store.ErrConfigChanged) {
+				continue
+			}
+			return store.ConfigWithPlaintext{}, err
+		}
+		return s.GetConfigPlaintext(ctx, userID, configID)
 	}
-	if _, err := s.inner.UpdateConfig(ctx, userID, configID, innerPatch); err != nil {
-		return store.ConfigWithPlaintext{}, err
-	}
-	return s.GetConfigPlaintext(ctx, userID, configID)
 }
 
 // DeleteConfig forwards directly to the underlying [store.Store]. No
