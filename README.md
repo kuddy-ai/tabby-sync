@@ -139,7 +139,7 @@ block merging.
 
 A pre-built image is published to GHCR only when a GitHub Release is created.
 Release Please keeps updating its release PR as changes land on `main`; merging
-that release PR creates the version and triggers the image publish.
+that release PR manually creates the version and triggers the image publish.
 
 ```bash
 # Pull the latest image
