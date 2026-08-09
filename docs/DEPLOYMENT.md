@@ -20,21 +20,33 @@ cd tabby-sync
 cp .env.example .env
 # Edit .env — no secrets go here; they're set in docker-compose.yml
 
-# 3. Create the data directory and users file
-mkdir -p data
-cp docs/users.yml.example data/users.yml
-# Edit data/users.yml with your user entries (see docs/users.yml.example)
-
-# 4. Update the Caddyfile with your domain
+# 3. Update the Caddyfile with your domain
 # Replace "sync.example.com" in Caddyfile with your actual domain
 
-# 5. Start everything
+# 4. Start everything
 docker compose up -d
 
-# 6. Check health
+# 5. Check health
 curl https://sync.example.com/healthz
 # Should return: ok
+
+# 6. Retrieve your auto-generated token (single-user deployments)
+docker compose exec tabby-sync cat /data/token.txt
+# Paste this into Tabby desktop > Settings > Config sync.
+
+# 7. (Optional but recommended) Remove the plaintext copy now that you've
+# saved it in Tabby. token.txt isn't needed for the server to keep running
+# - only users.yml's hash is - and leaving it in place means it ends up in
+# any future backup/snapshot of the volume.
+docker compose exec tabby-sync rm /data/token.txt
 ```
+
+The image bootstraps itself on first boot: if `/data/users.yml` doesn't
+already exist when the container starts, it generates one random-token user
+and writes the plaintext token to `/data/token.txt` (mode 600) inside the
+volume — no manual file creation needed for a single-user deployment. See
+[Users File](#users-file) below for multi-user setups, which still use
+`docs/users.yml.example` as a schema reference.
 
 ## Configuration
 
@@ -61,8 +73,45 @@ as 64 hex characters in `TABBY_SYNC_MASTER_KEY`.
 
 ### Users File
 
-See [`docs/users.yml.example`](./users.yml.example) for the schema. Each
-user needs:
+**Single user:** nothing to do — the entrypoint auto-generates
+`/data/users.yml` with one random-token user on first boot if the file
+doesn't already exist, and writes the plaintext token to `/data/token.txt`
+(mode 600) so you can retrieve it with
+`docker compose exec tabby-sync cat /data/token.txt`. This only happens
+ahead of the `serve` subcommand, so `docker compose run tabby-sync version`
+etc. won't create credentials as a side effect.
+
+The generated user's display name defaults to `default`; set
+`TABBY_SYNC_USER_NAME` (e.g. in `docker-compose.yml` or `.env`) before
+first boot to use a different name instead of editing `users.yml` by
+hand afterwards.
+
+**Multiple users:** create `users.yml` yourself *before* first boot (the
+auto-bootstrap only fires when the file is missing) — see
+[`docs/users.yml.example`](./users.yml.example) for the schema. The default
+`docker-compose.yml` uses a named volume (`tabby-data:/data`), not a host
+bind mount, so there's no `./data` directory to drop the file into directly;
+seed the volume with a throwaway container instead:
+
+Seed it through the `tabby-sync` service image itself (not a plain `alpine`
+container), so the file lands owned by the same non-root `tabby` user the
+server runs as, consistent with how the entrypoint's own auto-bootstrap
+writes it:
+
+```bash
+docker volume create tabby-data
+docker compose run --rm -T --no-deps --entrypoint sh tabby-sync \
+  -c 'cat > /data/users.yml && chmod 600 /data/users.yml' \
+  < docs/users.yml.example
+# Now edit the seeded file's placeholder hash/entries before starting:
+docker compose run --rm -T --no-deps --entrypoint sh tabby-sync -c 'cat /data/users.yml'
+```
+
+(If you've changed `docker-compose.yml` to use a host bind mount instead,
+e.g. `./data:/data`, you don't need the throwaway container — just
+`cp docs/users.yml.example ./data/users.yml` directly on the host.)
+
+Each user needs:
 
 - `id`: unique positive integer
 - `name`: display name
@@ -111,14 +160,21 @@ If you already have nginx, Traefik, or another TLS-terminating proxy:
 
 ## Backup
 
+The default `docker-compose.yml` uses a named volume (`tabby-data`), not a
+host bind mount, so there's no `./data` directory to `cp` from directly —
+these examples read the volume's files through a throwaway container. (If
+you've switched to a bind mount, e.g. `./data:/data`, you can `cp` from
+`./data/...` directly instead.)
+
 ```bash
 # Stop the container (ensures SQLite WAL is checkpointed)
 docker compose stop tabby-sync
 
-# Copy critical files
-cp data/tabby-sync.db backups/tabby-sync-$(date +%Y%m%d).db
-cp data/master.key backups/master-$(date +%Y%m%d).key
-cp data/users.yml backups/users-$(date +%Y%m%d).yml
+# Copy critical files out of the named volume
+mkdir -p backups
+docker run --rm -v tabby-data:/data:ro alpine cat /data/tabby-sync.db > "backups/tabby-sync-$(date +%Y%m%d).db"
+docker run --rm -v tabby-data:/data:ro alpine cat /data/master.key > "backups/master-$(date +%Y%m%d).key"
+docker run --rm -v tabby-data:/data:ro alpine cat /data/users.yml > "backups/users-$(date +%Y%m%d).yml"
 
 # Restart
 docker compose start tabby-sync
@@ -129,11 +185,17 @@ compromised together, the attacker can decrypt all configs.
 
 ## Restore
 
+Restore writes through the `tabby-sync` service image itself (not a plain
+`alpine` container) so the files land owned by the same non-root `tabby`
+user the server runs as. A plain root container would leave them
+root-owned, and the server's `os.Chmod(dbPath, 0600)` on startup fails
+with EPERM on a file it doesn't own.
+
 ```bash
 docker compose down
-cp backups/tabby-sync-YYYYMMDD.db data/tabby-sync.db
-cp backups/master-YYYYMMDD.key data/master.key
-cp backups/users-YYYYMMDD.yml data/users.yml
+docker compose run --rm -T --no-deps --entrypoint sh tabby-sync -c 'cat > /data/tabby-sync.db' < backups/tabby-sync-YYYYMMDD.db
+docker compose run --rm -T --no-deps --entrypoint sh tabby-sync -c 'cat > /data/master.key' < backups/master-YYYYMMDD.key
+docker compose run --rm -T --no-deps --entrypoint sh tabby-sync -c 'cat > /data/users.yml' < backups/users-YYYYMMDD.yml
 docker compose up -d
 ```
 
