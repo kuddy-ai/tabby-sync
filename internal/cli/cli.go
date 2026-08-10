@@ -35,6 +35,7 @@ const usage = `Usage: tabby-sync <command>
 
 Commands:
   serve     Start the tabby-sync HTTP server
+  bootstrap Create the first Docker user without printing its token
   init      Initialize data directory, master key, and users file
   user      Manage users (add, rm, rotate)
   doctor    Check environment for common configuration problems
@@ -74,6 +75,8 @@ func Run(ctx context.Context, args []string, getenv func(string) string, stdout,
 		return 0
 	case "serve":
 		return runServe(ctx, getenv, stderr)
+	case "bootstrap":
+		return runBootstrap(args, getenv, stdout, stderr)
 	case "init":
 		return runInit(args, getenv, stdout, stderr)
 	case "user":

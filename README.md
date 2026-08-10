@@ -38,7 +38,8 @@ are handled without credentials.
 - Per-user Bearer tokens stored as hashes in `users.yml`
 - SQLite WAL storage with per-user scoping and a 50-config quota
 - AES-256-GCM encryption at rest with HKDF-SHA256 per-user keys
-- `serve`, `init`, `doctor`, `user add`, `user rm`, and `user rotate` commands
+- `serve`, `bootstrap`, `init`, `doctor`, `user add`, `user rm`, and
+  `user rotate` commands
 - Structured logs, request IDs, body limits, security headers, and rate limits
 - Zero-touch first-user bootstrap in the Docker image
 - Docker Compose and Caddy deployment examples

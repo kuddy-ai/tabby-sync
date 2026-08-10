@@ -76,6 +76,11 @@ jobs:
           grep -F -- "0.0.0-dev" <<< "$output"
           grep -F -- "$BUILD_COMMIT" <<< "$output"
 
+      - name: Test bootstrap, backup, and restore lifecycle
+        env:
+          TABBY_SYNC_TEST_IMAGE: tabby-sync:smoke
+        run: scripts/test-docker-lifecycle.sh
+
       - name: Remove smoke test container
         if: always()
         env:

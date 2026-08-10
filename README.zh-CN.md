@@ -36,7 +36,8 @@ AES-256-GCM 静态加密。
 - `users.yml` 中按哈希保存的独立用户 Bearer Token
 - SQLite WAL 存储、按用户隔离和每用户 50 个配置的配额
 - AES-256-GCM 静态加密及 HKDF-SHA256 用户级派生密钥
-- `serve`、`init`、`doctor`、`user add`、`user rm`、`user rotate` 命令
+- `serve`、`bootstrap`、`init`、`doctor`、`user add`、`user rm`、
+  `user rotate` 命令
 - 结构化日志、请求 ID、请求体限制、安全响应头和速率限制
 - Docker 首次启动自动创建第一个用户
 - Docker Compose 与 Caddy 部署示例
