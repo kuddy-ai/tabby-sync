@@ -11,6 +11,25 @@ Operators should upgrade to the latest release before requesting a backport.
 | Older releases | No guaranteed fixes |
 | Unreleased development builds | Best effort only |
 
+## 支持的部署边界
+
+tabby-sync 面向个人、小团队和可信内部环境，不是公网 SaaS，也不把应用层
+HTTP 服务设计成可直接承受不可信公网流量的安全边界。
+
+- 不要把 tabby-sync 的应用端口直接暴露到公网；应只允许可信 HTTPS 反向代理
+  或受控私网访问。
+- 如果同步域名可以从公网访问，反向代理、防火墙或上游网关必须负责未认证请求
+  的访问控制、IP 限流和异常流量处理。
+- 应使用 tabby-sync CLI 或首次启动流程生成的高熵 Token，不要自行设置可猜测的
+  短 Token。
+- 应用内的速率限制针对认证成功的用户。缺失、格式错误、未知或已禁用的 Bearer
+  Token 会返回 `401`，但不会由应用按来源 IP 限流。
+- 应用日志中的 `remote_ip` 是尽力而为的观测字段，可能来自受信任私网代理转发的
+  `X-Forwarded-For`；它不是认证或授权依据，也不应作为唯一审计证据。
+
+以上限制是当前私域部署模型下明确接受的边界。如果未来支持不可信公网部署，必须
+重新评审代理信任、分布式限流、滥用防护和审计要求。
+
 ## 私密报告漏洞
 
 不要在公开 Issue、PR、Discussion 或日志中披露可利用细节。请使用仓库的

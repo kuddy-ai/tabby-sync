@@ -9,6 +9,12 @@ tabby-sync is intended for individuals, small teams, and trusted internal
 environments. It is not a public SaaS. The server operator and host are trusted
 with plaintext configuration data while requests are processed.
 
+The application listener is expected to be reachable only from a trusted HTTPS
+reverse proxy or a controlled private network. A publicly reachable sync domain
+does not turn the application into a public-service perimeter: the reverse
+proxy, firewall, or upstream gateway remains responsible for access policy,
+unauthenticated request throttling, and hostile-traffic handling.
+
 ## What tabby-sync protects
 
 | Threat | Protection |
@@ -24,13 +30,21 @@ with plaintext configuration data while requests are processed.
 
 ## Known boundaries
 
-- Failed Bearer authentication currently returns 401 before the rate limiter,
-  so invalid-token guessing is not yet IP-limited. This is tracked in
-  [#70](https://github.com/kuddy-ai/tabby-sync/issues/70).
+- The in-process limiter applies after successful authentication and is keyed
+  by user ID. Missing, malformed, unknown, and disabled-user Bearer tokens
+  return 401 before that limiter and are not throttled by source IP. This is an
+  accepted boundary of the private deployment model, not a public-edge abuse
+  control. Use the reverse proxy, firewall, or upstream gateway to limit
+  unauthenticated traffic whenever the HTTPS endpoint is publicly reachable.
 - Rate limits are process-local and reset on restart. Multiple replicas do not
   share buckets.
-- The current trusted-proxy boundary has known deployment constraints tracked
-  in [#68](https://github.com/kuddy-ai/tabby-sync/issues/68).
+- Proxy-derived `remote_ip` is best-effort observability metadata. Forwarding
+  headers are accepted only from loopback, RFC1918, or IPv6 unique-local peers,
+  and the current implementation selects the leftmost `X-Forwarded-For` entry.
+  The supported model therefore treats the reverse proxy and its private
+  network as trusted. An untrusted peer on that network can forge log
+  attribution, but cannot bypass Bearer authentication, user isolation, or any
+  authorization decision because those controls never use `remote_ip`.
 - Encryption protects a copied database from disclosure without the key; it
   does not protect a running process or host that already has the key.
 
@@ -44,6 +58,8 @@ with plaintext configuration data while requests are processed.
 | Secrets stored inside Tabby config | The server decrypts config content during API requests. |
 | Database and master key leaked together | The attacker has everything needed to decrypt stored content. |
 | Untrusted third-party instance | The remote operator controls the plaintext-processing endpoint. |
+| Direct exposure to hostile public traffic | Failed authentication is not IP-limited by the application; perimeter filtering and throttling are operator responsibilities. |
+| Security-grade client-IP attribution | A trusted private proxy may supply `X-Forwarded-For`; application `remote_ip` is not an authenticated identity. |
 
 ## Cryptography
 
@@ -62,6 +78,8 @@ The canonical envelope and recovery discussion is in
 - `users.yml` stores a SHA-256 hash and short display prefix, never the token.
 - Credential comparison uses `crypto/subtle`; map lookup itself is not claimed
   to be constant-time.
+- The private deployment model assumes CLI- or bootstrap-generated high-entropy
+  tokens. Manually chosen low-entropy tokens are unsupported.
 - User-file changes require a server restart before they take effect.
 - There is no password authentication, OAuth, OIDC, or public registration.
 
@@ -73,6 +91,5 @@ The canonical envelope and recovery discussion is in
 - Test restoration periodically; a backup that has never been restored is not
   a verified recovery path.
 
-See [`docs/DEPLOYMENT.md`](./DEPLOYMENT.md) and the open hardening work in
-[#63](https://github.com/kuddy-ai/tabby-sync/issues/63) before relying on the
-example commands for production recovery.
+See [`docs/DEPLOYMENT.md`](./DEPLOYMENT.md) for the supported Compose-aware
+backup and restore workflow.

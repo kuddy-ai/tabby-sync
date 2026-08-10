@@ -199,7 +199,14 @@ are deliberately omitted. Decrypt failures use the literal message
 
 ## Rate-limit boundary
 
-Authenticated requests are limited per user to 60 requests per minute. Failed
-Bearer authentication currently returns 401 before the limiter and is not yet
-IP-limited; the correction is tracked in
-[#70](https://github.com/kuddy-ai/tabby-sync/issues/70).
+Authenticated requests are limited per user to 60 requests per minute. Missing,
+malformed, unknown, and disabled-user Bearer tokens return 401 before the
+limiter and are not IP-limited by the application. This is intentional for the
+supported private, self-hosted deployment model. If the HTTPS endpoint is
+reachable from an untrusted network, the reverse proxy, firewall, or upstream
+gateway must provide unauthenticated-request throttling and access controls.
+
+Use CLI- or bootstrap-generated tokens, which contain 256 random bits. Do not
+replace them with manually chosen, low-entropy credentials. Proxy-derived
+client IPs are observability metadata only and never participate in
+authentication or authorization decisions.

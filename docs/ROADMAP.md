@@ -28,19 +28,9 @@ each change:
 ## Tracked reliability and security work
 
 The issue tracker is the source of truth for active implementation work. The
-main known follow-ups at the time of this update are:
-
-- [#63](https://github.com/kuddy-ai/tabby-sync/issues/63): harden Docker
-  backup, restore, and bootstrap edge cases
-- [#68](https://github.com/kuddy-ai/tabby-sync/issues/68): make trusted-proxy
-  handling opt-in and spoof-resistant
-- [#70](https://github.com/kuddy-ai/tabby-sync/issues/70): rate-limit failed
-  Bearer authentication attempts by client IP
-- [#71](https://github.com/kuddy-ai/tabby-sync/issues/71): make encrypted
-  config creation atomic
-
-No timeline is implied by this list. Closed Issues and the changelog describe
-completed work; this document should not duplicate a release-by-release plan.
+project has no known open reliability or security follow-ups at the time of
+this update. Closed Issues and the changelog describe completed work; this
+document should not duplicate a release-by-release plan.
 
 ## Possible future directions
 
@@ -54,6 +44,8 @@ completed work; this document should not duplicate a release-by-release plan.
 ## Explicit non-goals
 
 - Public SaaS hosting or open registration
+- Application-level perimeter defense for direct exposure to hostile public
+  traffic, including unauthenticated IP throttling and hostile proxy networks
 - Zero-knowledge or end-to-end-encryption claims
 - A browser-based admin interface without a separately reviewed threat model
 - Configuration conflict merging that diverges from Tabby client semantics
