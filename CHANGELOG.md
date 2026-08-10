@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.7.0](https://github.com/kuddy-ai/tabby-sync/compare/1.6.0...1.7.0) (2026-08-10)
+
+
+### Features
+
+* add cross-platform binary build workflow ([#56](https://github.com/kuddy-ai/tabby-sync/issues/56)) ([0a156f1](https://github.com/kuddy-ai/tabby-sync/commit/0a156f18fce68550ffdd906ead5ff265352b1210))
+* add Docker image publish workflow to GHCR ([#55](https://github.com/kuddy-ai/tabby-sync/issues/55)) ([55f23ee](https://github.com/kuddy-ai/tabby-sync/commit/55f23ee178206ac00ffa3f281c80474fa629bfdb))
+
+
+### Bug Fixes
+
+* **build:** embed release metadata and update the runtime image ([#69](https://github.com/kuddy-ai/tabby-sync/issues/69)) ([8c8c5ac](https://github.com/kuddy-ai/tabby-sync/commit/8c8c5ac7a6ce3ac5ae487df42dd0e2255a603e0f))
+* **ci:** restore CI workflow job scheduling ([#61](https://github.com/kuddy-ai/tabby-sync/issues/61)) ([bdda937](https://github.com/kuddy-ai/tabby-sync/commit/bdda9376b958d644568cde9f3bd424d2b718ebf8))
+* **deploy:** honor the configured application log level ([#69](https://github.com/kuddy-ai/tabby-sync/issues/69)) ([8c8c5ac](https://github.com/kuddy-ai/tabby-sync/commit/8c8c5ac7a6ce3ac5ae487df42dd0e2255a603e0f))
+* **docker:** harden backup, restore, and first-user bootstrap ([#63](https://github.com/kuddy-ai/tabby-sync/issues/63)) ([6d1d734](https://github.com/kuddy-ai/tabby-sync/commit/6d1d734b4b7b81f0c8125233d5c2acf22098b551))
+* **docker:** make entrypoint permissions reproducible across build hosts ([#69](https://github.com/kuddy-ai/tabby-sync/issues/69)) ([8c8c5ac](https://github.com/kuddy-ai/tabby-sync/commit/8c8c5ac7a6ce3ac5ae487df42dd0e2255a603e0f))
+* **server:** add CORS preflight and initial trusted-proxy support; hardening remains tracked in [#68](https://github.com/kuddy-ai/tabby-sync/issues/68) ([80effb0](https://github.com/kuddy-ai/tabby-sync/commit/80effb03a023f151988158856f3be91629654975))
+* **store:** make encrypted config creation atomic ([#71](https://github.com/kuddy-ai/tabby-sync/issues/71)) ([f56cdda](https://github.com/kuddy-ai/tabby-sync/commit/f56cdda561b342ad6233f752ab50aa50c7697fcd))
+* **sync:** prevent config sync feedback loops on idempotent PATCH ([#62](https://github.com/kuddy-ai/tabby-sync/issues/62)) ([9d7c268](https://github.com/kuddy-ai/tabby-sync/commit/9d7c26881e21c046216f789de1cf19fa5b1731ac))
+
 ## [1.6.0](https://github.com/kuddy-ai/tabby-sync/compare/1.5.0...1.6.0) (2026-08-09)
 
 
