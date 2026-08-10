@@ -85,6 +85,20 @@ type CreateConfigInput struct {
 	LastUsedWithVersion string
 }
 
+// CreateConfigInputBuilder constructs a [CreateConfigInput] after the
+// persistence implementation has reserved the row's final configID.
+//
+// The builder exists because the encrypted-store AAD binds ciphertext to the
+// assigned configID, while databases such as SQLite assign that ID during an
+// insert. Implementations of [Store.CreateConfigWithID] MUST invoke the
+// builder exactly once inside the same transaction that reserves configID,
+// and MUST roll the transaction back if the builder returns an error.
+// Implementations MUST NOT log the returned input or include it in errors.
+// The builder MUST NOT call back into the same Store (implementations may hold
+// a transaction connection while it runs), and its errors MUST be safe to
+// propagate without plaintext, ciphertext, nonce, or key material.
+type CreateConfigInputBuilder func(configID int64) (CreateConfigInput, error)
+
 // UpdateConfigPatch describes a partial update to a configuration row.
 //
 // A nil pointer or a nil/empty byte slice means "do not change this
@@ -131,6 +145,19 @@ type Store interface {
 	// Implementations MUST validate that ContentCiphertext and
 	// ContentNonce are both non-empty.
 	CreateConfig(ctx context.Context, userID int64, in CreateConfigInput) (Config, error)
+
+	// CreateConfigWithID atomically reserves a final configID, calls build
+	// with that ID, and persists the returned input. The ID reservation,
+	// builder invocation, and final write MUST share one transaction: until
+	// commit, other readers see no row; if build or any persistence step
+	// fails, no row is committed. ModifiedAt MUST be strictly later than
+	// CreatedAt, preserving the former create-then-finalise sync-clock
+	// semantics without exposing either write.
+	//
+	// This callback-shaped contract keeps ID-bound encryption in the generic
+	// encrypted-store layer. Storage implementations remain unaware of
+	// plaintext, keys, AAD, and envelope formats.
+	CreateConfigWithID(ctx context.Context, userID int64, build CreateConfigInputBuilder) (Config, error)
 
 	// GetConfig returns the configuration row identified by configID
 	// IFF it is owned by userID. Cross-user access (configID exists
@@ -247,11 +274,9 @@ type EncryptedStore interface {
 	// (masterKey, userID, assignedConfigID) tuple and inserts the
 	// resulting ciphertext+nonce pair via the underlying [Store],
 	// returning the persisted row with its plaintext re-attached.
-	// The wrapper assigns the configID by writing once with a
-	// placeholder AAD, reading the row back, and updating it in
-	// place with the canonical AAD; if that second write fails the
-	// wrapper deletes the orphaned row to avoid leaving an
-	// undecryptable record on disk.
+	// The wrapper uses [Store.CreateConfigWithID] so encryption occurs
+	// exactly once with the final configID while the ID reservation and
+	// final persistence remain atomic and invisible to concurrent readers.
 	CreateConfigPlaintext(ctx context.Context, userID int64, in CreateConfigPlaintextInput) (ConfigWithPlaintext, error)
 
 	// GetConfigPlaintext returns the row identified by configID IFF

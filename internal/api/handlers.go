@@ -111,9 +111,8 @@ func (h *handlers) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 
 // handleCreateConfig implements POST /api/1/configs. The body shape
 // is `{name}`; an empty name is treated as 400 invalid request to
-// match the issue spec. The wrapper performs the two-step write
-// (insert with placeholder AAD, re-encrypt under the canonical
-// (userID, configID) AAD), so an empty Content is fine here.
+// match the issue spec. The wrapper encrypts empty Content under the
+// final (userID, configID) AAD inside an atomic store create.
 func (h *handlers) handleCreateConfig(w http.ResponseWriter, r *http.Request) {
 	u, ok := h.currentUser(w, r)
 	if !ok {

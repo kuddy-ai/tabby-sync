@@ -576,18 +576,19 @@ func TestNewRejectsNilInner(t *testing.T) {
 	}
 }
 
-// mockStore is a deliberately-broken in-memory [store.Store] used to
-// prove the two-step write rollback. CreateConfig succeeds; UpdateConfig
-// always fails with the configured error; DeleteConfig records the call
-// and reports success or the configured error. The other methods are
-// implemented as no-ops sufficient to satisfy the interface.
+// mockStore records which create path the encrypted wrapper uses. Its atomic
+// create invokes the ID-aware builder and can then inject a persistence error,
+// modelling a transaction that rolls back after canonical encryption.
 type mockStore struct {
-	createCalls []int64
-	updateErr   error
-	deleteCalls []int64
-	deleteErr   error
-	nextID      int64
-	closed      bool
+	createCalls  []int64
+	atomicCalls  []int64
+	atomicInputs []store.CreateConfigInput
+	atomicErr    error
+	updateCalls  int
+	deleteCalls  []int64
+	deleteErr    error
+	nextID       int64
+	closed       bool
 }
 
 func (m *mockStore) CreateConfig(_ context.Context, _ int64, in store.CreateConfigInput) (store.Config, error) {
@@ -601,6 +602,28 @@ func (m *mockStore) CreateConfig(_ context.Context, _ int64, in store.CreateConf
 	}, nil
 }
 
+func (m *mockStore) CreateConfigWithID(_ context.Context, userID int64, build store.CreateConfigInputBuilder) (store.Config, error) {
+	m.nextID++
+	id := m.nextID
+	in, err := build(id)
+	if err != nil {
+		return store.Config{}, err
+	}
+	m.atomicCalls = append(m.atomicCalls, id)
+	m.atomicInputs = append(m.atomicInputs, in)
+	if m.atomicErr != nil {
+		return store.Config{}, m.atomicErr
+	}
+	return store.Config{
+		ID:                  id,
+		UserID:              userID,
+		Name:                in.Name,
+		ContentCiphertext:   in.ContentCiphertext,
+		ContentNonce:        in.ContentNonce,
+		LastUsedWithVersion: in.LastUsedWithVersion,
+	}, nil
+}
+
 func (m *mockStore) GetConfig(_ context.Context, _, configID int64) (store.Config, error) {
 	return store.Config{ID: configID}, nil
 }
@@ -610,9 +633,7 @@ func (m *mockStore) ListConfigsByUser(_ context.Context, _ int64) ([]store.Confi
 }
 
 func (m *mockStore) UpdateConfig(_ context.Context, _, _ int64, _ store.UpdateConfigPatch) (store.Config, error) {
-	if m.updateErr != nil {
-		return store.Config{}, m.updateErr
-	}
+	m.updateCalls++
 	return store.Config{}, nil
 }
 
@@ -630,11 +651,12 @@ func (m *mockStore) CountConfigsByUser(_ context.Context, _ int64) (int, error) 
 	return 0, nil
 }
 
-func TestCreateRollsBackOnSecondStepFailure(t *testing.T) {
+func TestCreateUsesAtomicIDBuilderAndPropagatesRollback(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	mock := &mockStore{updateErr: errors.New("update failed (test)")}
+	rollbackErr := errors.New("commit failed (test)")
+	mock := &mockStore{atomicErr: rollbackErr}
 	w, err := encrypted.New(mock, newTestKey())
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -646,16 +668,30 @@ func TestCreateRollsBackOnSecondStepFailure(t *testing.T) {
 		Content: plaintextSentinel,
 	})
 	if err == nil {
-		t.Fatal("CreateConfigPlaintext succeeded; want error from broken update")
+		t.Fatal("CreateConfigPlaintext succeeded; want atomic persistence error")
+	}
+	if !errors.Is(err, rollbackErr) {
+		t.Fatalf("CreateConfigPlaintext error = %v; want rollback marker", err)
+	}
+	if len(mock.createCalls) != 0 || mock.updateCalls != 0 || len(mock.deleteCalls) != 0 {
+		t.Fatalf("legacy write path used: creates=%v updates=%d deletes=%v",
+			mock.createCalls, mock.updateCalls, mock.deleteCalls)
+	}
+	if len(mock.atomicCalls) != 1 || len(mock.atomicInputs) != 1 {
+		t.Fatalf("atomic calls = %v; inputs=%d; want exactly one", mock.atomicCalls, len(mock.atomicInputs))
 	}
 
-	if len(mock.createCalls) != 1 {
-		t.Fatalf("createCalls = %v; want exactly one create", mock.createCalls)
+	id := mock.atomicCalls[0]
+	sealed := mock.atomicInputs[0]
+	pt, err := crypto.Decrypt(newTestKey(), 1, id, sealed.ContentCiphertext, sealed.ContentNonce)
+	if err != nil {
+		t.Fatalf("canonical AAD decrypt: %v", err)
 	}
-	insertedID := mock.createCalls[0]
-	if len(mock.deleteCalls) != 1 || mock.deleteCalls[0] != insertedID {
-		t.Fatalf("deleteCalls = %v; want exactly [%d] (rollback of orphan)",
-			mock.deleteCalls, insertedID)
+	if !bytes.Equal(pt, plaintextSentinel) {
+		t.Fatal("canonical AAD decrypt returned unexpected plaintext")
+	}
+	if _, err := crypto.Decrypt(newTestKey(), 1, 0, sealed.ContentCiphertext, sealed.ContentNonce); !errors.Is(err, crypto.ErrDecrypt) {
+		t.Fatalf("placeholder AAD decrypt error = %v; want ErrDecrypt", err)
 	}
 }
 
