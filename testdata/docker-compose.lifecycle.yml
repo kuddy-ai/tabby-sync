@@ -1,0 +1,15 @@
+services:
+  tabby-sync:
+    image: ${TABBY_SYNC_TEST_IMAGE:?TABBY_SYNC_TEST_IMAGE must be set}
+    environment:
+      TABBY_SYNC_ADDR: :8080
+      TABBY_SYNC_DATA_DIR: /data
+      TABBY_SYNC_USERS_FILE: /data/users.yml
+      TABBY_SYNC_MASTER_KEY_PROVIDER: file
+      TABBY_SYNC_USER_NAME: ${TABBY_SYNC_TEST_USER_NAME:-default}
+      APP_LOG_LEVEL: info
+    volumes:
+      - tabby-data:/data
+
+volumes:
+  tabby-data:

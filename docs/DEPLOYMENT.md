@@ -42,11 +42,12 @@ docker compose exec tabby-sync rm /data/token.txt
 ```
 
 The image bootstraps itself on first boot: if `/data/users.yml` doesn't
-already exist when the container starts, it generates one random-token user
-and writes the plaintext token to `/data/token.txt` (mode 600) inside the
-volume — no manual file creation needed for a single-user deployment. See
-[Users File](#users-file) below for multi-user setups, which still use
-`docs/users.yml.example` as a schema reference.
+already exist when the container starts, the Go `bootstrap` command validates
+the requested display name with the same Unicode rules used by the server,
+generates one random-token user, and writes the plaintext token to
+`/data/token.txt` (mode 600) inside the volume. The token is never printed to
+container logs. See [Users File](#users-file) below for multi-user setups,
+which still use `docs/users.yml.example` as a schema reference.
 
 ## Configuration
 
@@ -99,7 +100,6 @@ server runs as, consistent with how the entrypoint's own auto-bootstrap
 writes it:
 
 ```bash
-docker volume create tabby-data
 docker compose run --rm -T --no-deps --entrypoint sh tabby-sync \
   -c 'cat > /data/users.yml && chmod 600 /data/users.yml' \
   < docs/users.yml.example
@@ -115,7 +115,7 @@ Each user needs:
 
 - `id`: unique positive integer
 - `name`: display name
-- `token_prefix`: first ~8 characters of the token (for identification)
+- `token_prefix`: first 12 characters of the token (for identification)
 - `token_hash`: SHA-256 hex of the full token
 - `disabled`: `false` (or `true` to revoke access)
 
@@ -160,44 +160,54 @@ If you already have nginx, Traefik, or another TLS-terminating proxy:
 
 ## Backup
 
-The default `docker-compose.yml` uses a named volume (`tabby-data`), not a
-host bind mount, so there's no `./data` directory to `cp` from directly —
-these examples read the volume's files through a throwaway container. (If
-you've switched to a bind mount, e.g. `./data:/data`, you can `cp` from
-`./data/...` directly instead.)
+Use the repository script rather than resolving Docker's physical volume name.
+It accesses `/data` through the Compose `tabby-sync` service, so it works with
+the default project-scoped named volume and with a host bind mount.
 
 ```bash
-# Stop the container (ensures SQLite WAL is checkpointed)
-docker compose stop tabby-sync
-
-# Copy critical files out of the named volume
-mkdir -p backups
-docker run --rm -v tabby-data:/data:ro alpine cat /data/tabby-sync.db > "backups/tabby-sync-$(date +%Y%m%d).db"
-docker run --rm -v tabby-data:/data:ro alpine cat /data/master.key > "backups/master-$(date +%Y%m%d).key"
-docker run --rm -v tabby-data:/data:ro alpine cat /data/users.yml > "backups/users-$(date +%Y%m%d).yml"
-
-# Restart
-docker compose start tabby-sync
+scripts/backup.sh "backups/tabby-sync-$(date +%Y%m%d-%H%M%S)"
 ```
 
-**Store master key backups separately from database backups.** If both are
-compromised together, the attacker can decrypt all configs.
+If the service is running, the script stops it so SQLite can checkpoint its WAL
+and restarts it before returning. It builds a new backup directory atomically:
+
+```text
+tabby-sync-YYYYMMDD-HHMMSS/
+├── tabby-sync.db
+├── master.key
+└── users.yml
+```
+
+The directory is mode `0700` and each file is mode `0600`. A missing or failed
+copy removes the temporary directory and leaves no destination that could be
+mistaken for a valid backup. `token.txt` is deliberately excluded.
+
+The resulting directory contains everything needed to decrypt the database and
+must be protected as sensitive data. **Store an additional master-key copy
+separately from database backups.** If both are compromised together, the
+attacker can decrypt all configs.
 
 ## Restore
 
-Restore writes through the `tabby-sync` service image itself (not a plain
-`alpine` container) so the files land owned by the same non-root `tabby`
-user the server runs as. A plain root container would leave them
-root-owned, and the server's `os.Chmod(dbPath, 0600)` on startup fails
-with EPERM on a file it doesn't own.
+Restore through the Compose service mount as well:
 
 ```bash
-docker compose down
-docker compose run --rm -T --no-deps --entrypoint sh tabby-sync -c 'cat > /data/tabby-sync.db' < backups/tabby-sync-YYYYMMDD.db
-docker compose run --rm -T --no-deps --entrypoint sh tabby-sync -c 'cat > /data/master.key' < backups/master-YYYYMMDD.key
-docker compose run --rm -T --no-deps --entrypoint sh tabby-sync -c 'cat > /data/users.yml' < backups/users-YYYYMMDD.yml
+scripts/restore.sh backups/tabby-sync-YYYYMMDD-HHMMSS
 docker compose up -d
+curl https://sync.example.com/healthz
 ```
+
+The script validates the three required non-empty files and the 32-byte master
+key before changing `/data`. It stops a running `tabby-sync` service, stages the
+new files with mode `0600`, preserves the old files for rollback, runs
+`tabby-sync doctor`, and restores the previous files if validation fails. A
+service that was running is restarted automatically; the explicit
+`docker compose up -d` above also covers restoration into a fresh project
+volume.
+
+A successful restore removes any old `/data/token.txt`, because that plaintext
+copy may not match the restored `users.yml`. Existing tokens saved in Tabby
+continue to work when they match the restored credential hashes.
 
 ## Monitoring
 

@@ -1,4 +1,4 @@
-// Package cli — user management subcommands (init, user add/rm/rotate, doctor).
+// Package cli — bootstrap, initialization, user-management, and doctor commands.
 package cli
 
 import (
@@ -15,6 +15,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/kuddy-ai/tabby-sync/internal/auth"
 	"github.com/kuddy-ai/tabby-sync/internal/keys"
 	"github.com/kuddy-ai/tabby-sync/internal/store/sqlite"
 )
@@ -108,6 +109,79 @@ func runInit(args []string, getenv func(string) string, stdout, stderr io.Writer
 	_ = st.Close()
 	fmt.Fprintln(stdout, "database: initialized")
 	fmt.Fprintln(stdout, "\ninit complete. You can now add users with: tabby-sync user add <name>")
+	return 0
+}
+
+// runBootstrap implements the non-interactive first-user bootstrap used by
+// docker-entrypoint.sh. Unlike `user add`, it never prints the plaintext token:
+// the token is written atomically to token.txt with mode 0600 so container logs
+// cannot become a credential store.
+//
+// Name normalisation deliberately uses strings.TrimSpace, the same Unicode
+// whitespace semantics used by auth.LoadUsersFile. Keeping this operation in
+// Go avoids a shell locale/character-class mismatch that could otherwise write
+// a users.yml which the server immediately rejects.
+func runBootstrap(args []string, getenv func(string) string, stdout, stderr io.Writer) int {
+	if len(args) != 3 {
+		fmt.Fprintln(stderr, "Usage: tabby-sync bootstrap <name>")
+		return 2
+	}
+
+	name := strings.TrimSpace(args[2])
+	if name == "" {
+		fmt.Fprintln(stderr, "error: name must not be empty")
+		return 2
+	}
+
+	dataDir := getenv("TABBY_SYNC_DATA_DIR")
+	if dataDir == "" {
+		fmt.Fprintln(stderr, "error: TABBY_SYNC_DATA_DIR is required")
+		return 2
+	}
+	usersFile := resolveUsersFile(getenv)
+	if usersFile == "" {
+		fmt.Fprintln(stderr, "error: cannot determine users file path")
+		return 2
+	}
+
+	if err := os.MkdirAll(dataDir, 0o750); err != nil {
+		fmt.Fprintln(stderr, "error: cannot create data directory")
+		return 1
+	}
+	if err := os.MkdirAll(filepath.Dir(usersFile), 0o750); err != nil {
+		fmt.Fprintln(stderr, "error: cannot create users-file directory")
+		return 1
+	}
+
+	if _, err := os.Stat(usersFile); err == nil {
+		fmt.Fprintln(stdout, "bootstrap skipped: users file already exists")
+		return 0
+	} else if !os.IsNotExist(err) {
+		fmt.Fprintln(stderr, "error: cannot inspect users file")
+		return 1
+	}
+
+	token, hash, prefix := generateToken()
+	tokenPath := filepath.Join(dataDir, "token.txt")
+	if err := writeFileAtomic(tokenPath, []byte(token+"\n"), 0o600); err != nil {
+		fmt.Fprintln(stderr, "error: cannot write bootstrap token")
+		return 1
+	}
+
+	schema := &usersFileSchema{Users: []usersFileEntry{{
+		ID:          1,
+		Name:        name,
+		TokenPrefix: prefix,
+		TokenHash:   hash,
+		Disabled:    false,
+	}}}
+	if err := saveUsersYAML(usersFile, schema); err != nil {
+		_ = os.Remove(tokenPath)
+		fmt.Fprintln(stderr, "error: cannot write bootstrap users file")
+		return 1
+	}
+
+	fmt.Fprintln(stdout, "bootstrap credentials created")
 	return 0
 }
 
@@ -352,12 +426,12 @@ func runDoctor(args []string, getenv func(string) string, stdout, stderr io.Writ
 		fmt.Fprintln(stdout, "  [FAIL] TABBY_SYNC_USERS_FILE is not set and TABBY_SYNC_DATA_DIR is empty")
 		issues++
 	} else {
-		schema, err := loadUsersYAML(usersFile)
+		users, err := auth.LoadUsersFile(usersFile)
 		if err != nil {
 			fmt.Fprintf(stdout, "  [FAIL] users file: %v\n", err)
 			issues++
 		} else {
-			fmt.Fprintf(stdout, "  [OK]   users file loaded (%d users)\n", len(schema.Users))
+			fmt.Fprintf(stdout, "  [OK]   users file loaded (%d users)\n", users.UserCount())
 		}
 	}
 
@@ -449,15 +523,48 @@ func saveUsersYAML(path string, schema *usersFileSchema) error {
 	if err != nil {
 		return fmt.Errorf("cannot marshal users file: %w", err)
 	}
-	// Atomic write: write to temp file then rename, so a crash mid-write
-	// does not corrupt the existing users.yml.
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	if err := writeFileAtomic(path, data, 0o600); err != nil {
 		return fmt.Errorf("cannot write users file: %w", err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("cannot rename users file: %w", err)
+	return nil
+}
+
+// writeFileAtomic writes data to a uniquely named file in the destination
+// directory, applies the final mode before any bytes are written, fsyncs the
+// file, and renames it into place. CreateTemp starts at 0600; the explicit
+// Chmod makes the requested contract visible and keeps this helper correct if
+// it is reused for a stricter mode later.
+func writeFileAtomic(path string, data []byte, mode os.FileMode) (retErr error) {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer func() {
+		if tmp != nil {
+			_ = tmp.Close()
+		}
+		if retErr != nil {
+			_ = os.Remove(tmpName)
+		}
+	}()
+
+	if err := tmp.Chmod(mode); err != nil {
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	tmp = nil
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
 	}
 	return nil
 }

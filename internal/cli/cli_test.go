@@ -88,7 +88,7 @@ func TestRunHelpListsAllSubcommands(t *testing.T) {
 		t.Errorf("exit code = %d; want 0", code)
 	}
 	out := stdout.String()
-	for _, sub := range []string{"serve", "version", "help"} {
+	for _, sub := range []string{"serve", "bootstrap", "init", "user", "doctor", "version", "help"} {
 		if !strings.Contains(out, sub) {
 			t.Errorf("help output missing %q; got %q", sub, out)
 		}
