@@ -16,7 +16,7 @@ if ! echo "$branch" | grep -Eq "$branch_regex"; then
 fi
 
 changed="$(git diff --name-only origin/main...HEAD 2>/dev/null || true)"
-if echo "$changed" | grep -E '^(src|app|internal|packages|crates|cmd)/' >/dev/null 2>&1; then
+if echo "$changed" | grep -E '^(internal|cmd)/' >/dev/null 2>&1; then
   if ! echo "$changed" | grep -E '^(README\.md|CHANGELOG\.md|AGENTS\.md|docs/)' >/dev/null 2>&1; then
     echo "WARN: Source code changed but no docs/README/CHANGELOG/AGENTS update detected."
   fi

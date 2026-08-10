@@ -1,6 +1,6 @@
 name: Feature
-about: 功能需求
-labels: [feat]
+description: 提议新的功能或改进
+labels: [enhancement]
 body:
   - type: textarea
     id: background

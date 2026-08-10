@@ -1,72 +1,78 @@
 # Security Model
 
-This document describes what tabby-sync protects and what it does **not**
-protect. Read this before deploying in any environment.
+This document describes the protections and operational boundaries of
+tabby-sync. Read it before deploying the service.
 
-## Project Positioning
+## Deployment model
 
-tabby-sync is a **self-hosted** configuration sync backend for
-[Tabby Terminal](https://tabby.sh). It is designed for individuals, small
-teams, and trusted internal environments. It is **not** a public SaaS.
+tabby-sync is intended for individuals, small teams, and trusted internal
+environments. It is not a public SaaS. The server operator and host are trusted
+with plaintext configuration data while requests are processed.
 
-## What tabby-sync Protects
+## What tabby-sync protects
 
-| Threat | Mitigation |
-|--------|-----------|
-| **Database file leaked on its own** | Config content is encrypted at rest with AES-256-GCM. Without the master key, ciphertext blobs are unreadable. |
-| **Single token compromise** | Each user authenticates with an independent Bearer token. A leaked token exposes only that user's configs; other users are unaffected. |
-| **Cross-user access (horizontal privilege escalation)** | Every store query is scoped by `user_id`. The API returns 404 for any row not owned by the authenticated user — indistinguishable from "row does not exist". |
-| **Transport-layer sniffing** | HTTPS via Caddy (or any TLS-terminating reverse proxy) encrypts data in transit. |
-| **Log file leaked** | Logs never contain Authorization headers, token plaintext, config content, master key bytes, decrypted plaintext, or full request bodies. Filesystem paths are redacted. |
-| **Brute-force / scanning** | Per-token and per-IP in-memory rate limiting (60 requests/minute). Oversized payloads rejected at the middleware layer (2 MB body cap). |
-| **Abuse via config flooding** | Per-user quota of 50 configs. Rejected with HTTP 409 when exceeded. |
+| Threat | Protection |
+| --- | --- |
+| Database copied without the master key | Config content is encrypted at rest with AES-256-GCM. |
+| One user token is compromised | Tokens are independent; store operations remain scoped to that user ID. |
+| Cross-user config probing | Reads and mutations include `user_id`; missing and cross-user rows both return 404. |
+| Network sniffing | A trusted HTTPS reverse proxy protects data in transit. Current Tabby clients require HTTPS. |
+| Log disclosure | Application logs omit Authorization values, token plaintext, config content, key bytes, request bodies, and raw credential paths. |
+| Authenticated request flooding | Authenticated requests use an in-memory per-user token bucket of 60 requests per minute. |
+| Config flooding | Each user is limited to 50 configs; additional creates return HTTP 409. |
+| Oversized requests | The server rejects request bodies larger than 2 MiB before handlers run. |
 
-## What tabby-sync Does NOT Protect
+## Known boundaries
+
+- Failed Bearer authentication currently returns 401 before the rate limiter,
+  so invalid-token guessing is not yet IP-limited. This is tracked in
+  [#70](https://github.com/kuddy-ai/tabby-sync/issues/70).
+- Rate limits are process-local and reset on restart. Multiple replicas do not
+  share buckets.
+- The current trusted-proxy boundary has known deployment constraints tracked
+  in [#68](https://github.com/kuddy-ai/tabby-sync/issues/68).
+- Encryption protects a copied database from disclosure without the key; it
+  does not protect a running process or host that already has the key.
+
+## What tabby-sync does not protect
 
 | Threat | Why |
-|--------|-----|
-| **Malicious server administrator** | The operator who controls the host can read memory, swap the binary, or extract the master key. There is no protection against a hostile admin. |
-| **Running server compromised (RCE)** | If an attacker gains code execution on the server process, they can read the master key from memory and decrypt all configs. |
-| **Client device compromised** | tabby-sync trusts the client. Malware on the user's machine can steal the token and read/write configs freely. |
-| **User stores sensitive data in config plaintext** | tabby-sync encrypts content at rest, but the server decrypts it transiently during API calls. The operator can observe plaintext in memory. Users should not store high-value secrets (passwords, private keys) in Tabby configs without additional client-side encryption. |
-| **Token, master key, or DB backup leaked by the user** | tabby-sync cannot prevent an operator from mishandling credentials or backups. |
-| **Untrusted third-party instance** | Do NOT use an instance operated by someone you don't trust. The operator has full access. |
+| --- | --- |
+| Malicious server administrator | The operator can inspect memory, replace the binary, or read the master key. |
+| Host or process compromise | Code execution in the service context can access decrypted data and credentials. |
+| Compromised Tabby device | A stolen token grants that user read/write access. |
+| Secrets stored inside Tabby config | The server decrypts config content during API requests. |
+| Database and master key leaked together | The attacker has everything needed to decrypt stored content. |
+| Untrusted third-party instance | The remote operator controls the plaintext-processing endpoint. |
 
-## Encryption Design
+## Cryptography
 
-- **Algorithm**: AES-256-GCM (authenticated encryption)
-- **Key derivation**: HKDF-SHA256 per-user subkey from the master key
-- **AAD (Additional Authenticated Data)**: 1-byte version + 8-byte user ID + 8-byte config ID (prevents cross-user/cross-config replay)
-- **Nonce**: 12 bytes, freshly random per write
-- **Master key storage**: file (`master.key`, mode 0600) or environment variable (64 hex characters)
+- AES-256-GCM authenticated encryption
+- HKDF-SHA256 per-user subkeys
+- AAD: one version byte, eight-byte user ID, eight-byte config ID
+- Fresh 12-byte random nonce for each non-idempotent content write
+- File-based or environment-provided 32-byte master key
 
-See [`docs/CRYPTO.md`](./CRYPTO.md) for the full envelope specification.
+The canonical envelope and recovery discussion is in
+[`docs/CRYPTO.md`](./CRYPTO.md).
 
-## Authentication Design
+## Authentication
 
-- Bearer tokens: server-issued, 128+ bits of entropy
-- Storage: SHA-256 hash + short prefix in `users.yml`
-- Lookup: constant-time compare via `crypto/subtle`
-- No password-based auth, no OAuth/OIDC (v0.1)
+- Server-generated `tbs_` tokens contain 256 random bits.
+- `users.yml` stores a SHA-256 hash and short display prefix, never the token.
+- Credential comparison uses `crypto/subtle`; map lookup itself is not claimed
+  to be constant-time.
+- User-file changes require a server restart before they take effect.
+- There is no password authentication, OAuth, OIDC, or public registration.
 
-## What This Is NOT
+## Backup and recovery
 
-- **Not zero-knowledge**: The server decrypts configs to serve them. The operator can see plaintext in memory.
-- **Not end-to-end encrypted**: Encryption is at-rest only; the server is a trusted party during API operations.
-- **Not a public SaaS**: No multi-tenancy, no public registration, no billing isolation.
+- Back up `master.key`, `tabby-sync.db`, and `users.yml`.
+- Store the master key separately from database backups.
+- Protect backup copies at least as strongly as the live files.
+- Test restoration periodically; a backup that has never been restored is not
+  a verified recovery path.
 
-## Backup and Recovery
-
-- **Back up the master key separately from the database**. If the master key is lost, all encrypted configs become permanently unrecoverable.
-- Back up `tabby-sync.db` and `users.yml` regularly.
-- Store backups in a separate location from the running server.
-- Test restoration periodically.
-
-## Recommendations
-
-1. Deploy behind HTTPS (Caddy auto-TLS or your own reverse proxy).
-2. Restrict network access to trusted clients only.
-3. Keep the master key backup in a secure, offline location.
-4. Rotate user tokens periodically via `tabby-sync user rotate`.
-5. Monitor access logs for unexpected patterns.
-6. Keep the binary and dependencies up to date.
+See [`docs/DEPLOYMENT.md`](./DEPLOYMENT.md) and the open hardening work in
+[#63](https://github.com/kuddy-ai/tabby-sync/issues/63) before relying on the
+example commands for production recovery.

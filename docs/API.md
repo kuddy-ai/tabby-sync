@@ -1,9 +1,9 @@
 # tabby-sync HTTP API (v1)
 
 This document is the wire-format reference for the Tabby-compatible
-config sync API mounted under `/api/1/`. Every endpoint is gated by
-the Bearer middleware; the only unauthenticated route on the server
-is `GET /healthz`.
+config sync API mounted under `/api/1/`. Every application endpoint is gated
+by the Bearer middleware. `GET /healthz` and browser CORS preflight requests
+are handled without credentials; preflight does not execute an API handler.
 
 ## Authentication
 
@@ -22,8 +22,8 @@ server intentionally does not distinguish these failure modes.
 
 ## Error shape
 
-Every 4xx and 5xx response except `204 No Content` carries a JSON body
-of the form
+Errors written by the authentication, API, and rate-limit layers carry a JSON
+body of the form
 
 ```json
 { "error": "<code>" }
@@ -38,7 +38,16 @@ stable and lowercase:
 | `bad request`     | Malformed JSON or unknown JSON field (400).                          |
 | `invalid request` | Body parsed but is semantically invalid (empty name, all-nil patch). |
 | `not found`       | Row missing, owned by another user, or `{id}` not a positive integer (404). |
+| `quota exceeded`  | The user already owns 50 configs (409).                              |
+| `content too large` | The decoded `content` field exceeds 2 MiB (413).                  |
+| `rate limit exceeded` | The applicable in-memory bucket is empty (429).                  |
 | `internal error`  | Unexpected server error; details are logged, never echoed (500).     |
+
+The global request-body middleware runs before the API decoder. A body larger
+than 2 MiB returns `413` with the plain-text body `request body too large`.
+Standard `net/http` route and method errors may also be plain text. Clients
+must therefore use the status code first and only parse JSON when the response
+declares a JSON content type.
 
 Cross-user access is intentionally indistinguishable from a missing
 row: an unauthenticated probe cannot use response shape to enumerate
@@ -120,9 +129,11 @@ Creates a new, empty config for the authenticated user.
 { "name": "primary" }
 ```
 
-`name` is required and must be non-empty; the body is hard-capped at
-1 MiB by the request-size middleware. An empty `name`, an unknown
+`name` is required and must be non-empty; the complete JSON body is hard-capped
+at 2 MiB by the request-size middleware. An empty `name`, an unknown
 field, or malformed JSON returns `400`.
+
+If the user already owns 50 configs, the server returns `409 quota exceeded`.
 
 **201 Created**: a `configResponse` with the assigned id, an empty
 `content`, and `last_used_with_version: null`.
@@ -153,7 +164,9 @@ empty `{}` returns `400 invalid request`.
 
 - `name`: change the display name. Omitted fields are unchanged.
 - `content`: re-encrypt under the same `(userID, configID)` AAD with
-  a fresh nonce. An empty string is a valid plaintext.
+  a fresh nonce when the plaintext changes. An empty string is valid. The
+  decoded field limit is 2 MiB, while the enclosing JSON request is also capped
+  at 2 MiB, so JSON framing counts toward the practical request limit.
 - `last_used_with_version`: set the recorded version. Sending `""`
   clears the field on disk; the next read returns `null`.
 
@@ -163,7 +176,8 @@ name/content upload or a `last_used_with_version`-only update.
 
 `400 Bad Request` for malformed bodies, `400 invalid request` for an
 all-nil patch, `404 Not Found` for missing or cross-user rows OR a
-non-numeric / non-positive `{id}`.
+non-numeric / non-positive `{id}`, and `413` for an oversized request or
+decoded content field.
 
 ### `DELETE /api/1/configs/{id}`
 
@@ -178,8 +192,14 @@ Deletes the config.
 Per `docs/LOGGING_POLICY.md` and `AGENTS.md` §7 the api package never
 logs the `Authorization` header, the bearer token plaintext, the
 decrypted config content, the master-key bytes, or full request
-bodies. Internal-error log lines carry only the structured fields
-`op`, `user_id`, optional `config_id`, and (for non-decrypt errors)
-the wrapped error string already path-scrubbed by the underlying
-layers. Decrypt failures use the literal message `decrypt failure`
-with no `err` field so the raw error is intentionally not echoed.
+bodies. Internal-error log lines carry only the structured fields `op`,
+`user_id`, and optional `config_id`; wrapped store and operating-system errors
+are deliberately omitted. Decrypt failures use the literal message
+`decrypt failure` with no `err` field.
+
+## Rate-limit boundary
+
+Authenticated requests are limited per user to 60 requests per minute. Failed
+Bearer authentication currently returns 401 before the limiter and is not yet
+IP-limited; the correction is tracked in
+[#70](https://github.com/kuddy-ai/tabby-sync/issues/70).

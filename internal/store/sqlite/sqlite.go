@@ -55,13 +55,9 @@ type Store struct {
 // journal_mode as a lowercase string, and foreign_keys / busy_timeout /
 // synchronous as integers (rendered here as their decimal text form).
 //
-// foreign_keys=1 is enabled today even though the configs table has no
-// FK declarations yet: the upcoming users table (issue #7) will land
-// the configs.user_id -> users.id reference, and turning the pragma on
-// at the DSN means it is already in force the moment that migration
-// applies. v1 semantic review issue #6 for #6 flagged this as
-// decorative-for-now; this comment pins the rationale so a future
-// reader does not delete the pragma during cleanup.
+// foreign_keys=1 remains enabled even though the current schema has no foreign
+// key declarations. Keeping the connection invariant on prevents a future
+// migration from accidentally creating unenforced references.
 var expectedPragmas = []struct {
 	name string // pragma name (e.g. "journal_mode")
 	want string // expected lower-case textual form returned by PRAGMA <name>
@@ -108,7 +104,6 @@ func Open(ctx context.Context, dbPath string) (*Store, error) {
 		// modernc.org/sqlite/sqlite.go's _txlock parser. Pinning
 		// it here also keeps the contract honest if the
 		// MaxOpenConns=1 serialisation below is ever relaxed.
-		// Addresses v1 semantic review issue #2 for #8 + #9.
 		"&_txlock=immediate"
 
 	db, err := sql.Open("sqlite", dsn)
@@ -150,9 +145,8 @@ func Open(ctx context.Context, dbPath string) (*Store, error) {
 	// in-flight WAL contents to any other local user. A chmod failure
 	// fails Open closed: we close the db and propagate the wrapped
 	// error so the operator sees the misconfiguration during startup
-	// rather than running an exposed install. Addresses v1 semantic
-	// review issue #2 for #6. The chmod call is a no-op on Windows;
-	// the companion test t.Skips on that platform.
+	// rather than running an exposed install. The chmod call is a no-op on
+	// Windows, and the companion test skips that platform.
 	if err := tightenDBFileMode(dbPath); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("sqlite.Open: tighten db file mode: %w", err)
@@ -378,8 +372,7 @@ func (s *Store) UpdateConfig(ctx context.Context, userID, configID int64, patch 
 	// option is what actually controls begin mode. The
 	// `MaxOpenConns=1` pool also serialises writers today, but the
 	// explicit IMMEDIATE keeps the contract self-evident if the
-	// pool is ever relaxed.) Addresses v1 semantic review issue
-	// #2 for #8 + #9.
+	// pool is ever relaxed.)
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
 		return store.Config{}, fmt.Errorf("sqlite: begin update tx: %w", err)

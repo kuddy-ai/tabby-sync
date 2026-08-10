@@ -1,101 +1,67 @@
 # Roadmap
 
-## Project Positioning
+## Project position
 
-tabby-sync is a self-hosted configuration sync backend for
-[Tabby Terminal](https://tabby.sh). It targets **individuals, small teams,
-and trusted internal environments**. It is **not** a public SaaS, does not
-offer public registration, and should not be operated by untrusted third
-parties.
+tabby-sync is a self-hosted configuration-sync backend for
+[Tabby Terminal](https://tabby.sh). It targets individuals, small teams, and
+trusted internal environments. It is not a public SaaS and does not provide
+public registration, billing isolation, or protection from a hostile server
+operator.
 
----
+## Current 1.x / `main` baseline
 
-## v0.1 — Scope
+The following capabilities are implemented on the current `main` branch. See
+the changelog and Releases page to determine which published version contains
+each change:
 
-The first release delivers a **minimal, secure, self-hostable** sync
-backend that a single user or small team can deploy behind a reverse proxy
-and point their Tabby client at.
+- Tabby-compatible `/api/1/` config-sync API
+- Hashed Bearer-token credentials in `users.yml`
+- SQLite WAL persistence with per-user isolation and config quotas
+- AES-256-GCM encryption at rest with per-user HKDF-SHA256 keys
+- Idempotent config updates for stable multi-device sync clocks
+- User-management and diagnostic CLI commands
+- Structured logging, request IDs, size limits, security headers, and rate limits
+- Docker, Docker Compose, Caddy, and zero-touch first-user bootstrap
+- Compatibility, race, vulnerability, static-analysis, and container smoke tests
+- Manually approved Release Please PRs and release-triggered artifact publishing
 
-### What v0.1 includes
+## Tracked reliability and security work
 
-- Tabby-compatible config sync HTTP API (`/api/1/`)
-- Bearer-token authentication via `users.yml`
-- SQLite storage with WAL mode
-- AES-256-GCM encrypted-at-rest configuration content
-- Per-user key derivation (HKDF-SHA256)
-- CLI management (`serve`, `version`, `help`)
-- Request body size limits and security headers
-- Structured JSON logging with sensitive-field redaction
-- Docker / Docker Compose deployment example
-- Caddy reverse-proxy example
-- CI pipeline (test, vet, gofmt, govulncheck, gosec)
-- release-please automated changelog and versioning
+The issue tracker is the source of truth for active implementation work. The
+main known follow-ups at the time of this update are:
 
-### What v0.1 does NOT include
+- [#63](https://github.com/kuddy-ai/tabby-sync/issues/63): harden Docker
+  backup, restore, and bootstrap edge cases
+- [#68](https://github.com/kuddy-ai/tabby-sync/issues/68): make trusted-proxy
+  handling opt-in and spoof-resistant
+- [#70](https://github.com/kuddy-ai/tabby-sync/issues/70): rate-limit failed
+  Bearer authentication attempts by client IP
+- [#71](https://github.com/kuddy-ai/tabby-sync/issues/71): make encrypted
+  config creation atomic
 
-The following are explicitly **out of scope** for the first release to keep
-the project focused and avoid premature complexity:
+No timeline is implied by this list. Closed Issues and the changelog describe
+completed work; this document should not duplicate a release-by-release plan.
 
-| Category | Item |
-|----------|------|
-| Auth | Public/open registration |
-| Auth | OAuth / OIDC |
-| Admin | Admin HTTP API |
-| Admin | Admin Web UI |
-| Storage | PostgreSQL backend |
-| Storage | Configuration history / versioning |
-| Features | Configuration sharing between users |
-| Features | Configuration conflict merging |
-| Features | Email notifications |
-| Features | Account/token recovery mechanism |
-| Multi-tenancy | Public SaaS multi-tenant capability |
-| Security | KMS integration |
-| Security | Complex audit hash chains |
-| Security | Complex rate-limiting / anti-fraud system |
-| Release | GoReleaser |
-| Release | cosign signing |
-| Release | SBOM generation |
+## Possible future directions
 
----
+- PostgreSQL as an optional storage backend
+- KMS-backed master-key providers
+- User-file reload without a process restart
+- Stronger compatibility coverage across multiple Tabby versions
+- Signed images, provenance, and SBOM publication
+- Additional deployment examples when there is a demonstrated operator need
 
-## Future Considerations
+## Explicit non-goals
 
-The following items **may** be considered for post-v0.1 releases based on
-user feedback and project needs. No timeline is committed.
+- Public SaaS hosting or open registration
+- Zero-knowledge or end-to-end-encryption claims
+- A browser-based admin interface without a separately reviewed threat model
+- Configuration conflict merging that diverges from Tabby client semantics
+- Storing account-recovery secrets that can decrypt data without the master key
 
-### Likely next
+## Guiding principles
 
-- `init`, `user add`, `user rm`, `user rotate`, `doctor` CLI commands
-- Per-user config quota enforcement (e.g. 50 configs)
-- Per-token in-memory rate limiting
-- End-to-end integration tests simulating Tabby client sync flow
-- Comprehensive documentation (security model, deployment guide, client setup)
-
-### Possibly later
-
-- PostgreSQL as an alternative storage backend
-- KMS-backed master key management
-- More complete audit logging
-- More sophisticated release pipeline (GoReleaser, cosign, SBOM)
-- Richer deployment documentation (Kubernetes, Helm)
-- Stricter compatibility test suite against multiple Tabby client versions
-- SIGHUP-based `users.yml` hot-reload
-
-### Explicitly not planned
-
-- Public SaaS offering
-- Zero-knowledge / full end-to-end encryption claims
-- VPN deployment recommendations
-- Interactive TUI
-- Mobile client
-
----
-
-## Guiding Principles
-
-1. **Security over features** — every new surface is a new attack vector.
-2. **Honesty over marketing** — document what we protect and what we don't.
-3. **Simplicity over generality** — serve the self-hosted use case well
-   before trying to serve everyone.
-4. **Compatibility over innovation** — match Tabby client expectations
-   exactly; don't invent new protocols.
+1. Security over surface area.
+2. Compatibility over protocol invention.
+3. Honest operational limits over marketing claims.
+4. Simple, reversible deployment and upgrade paths.

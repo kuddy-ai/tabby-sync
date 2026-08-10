@@ -422,11 +422,10 @@ func TestIdempotentUpdateRetriesAndPreservesConcurrentChange(t *testing.T) {
 // TestUpdateContentEmptyReencrypts pins the documented contract that
 // a non-nil pointer to an empty slice re-encrypts the row to the
 // empty plaintext (the resulting ciphertext is just the GCM auth
-// tag) instead of being silently a no-op. v1 semantic review issue
-// #1 for #8 + #9 flagged the prior `len(patch.Content) > 0` signal
-// as conflating nil and an explicit empty slice; the fix promotes
-// Content to *[]byte so the empty-plaintext path is exercisable
-// from the API. The test asserts both the post-decrypt round-trip
+// tag) instead of being silently a no-op. A length-only signal would conflate
+// nil and an explicit empty slice, so Content is a *[]byte and the
+// empty-plaintext path remains exercisable from the API. The test asserts both
+// the post-decrypt round-trip
 // (Get returns []byte("") for the empty content) and the
 // side-channel invariant that the on-disk ciphertext and nonce
 // changed (a fresh nonce was used and the GCM tag was re-computed).
@@ -477,9 +476,8 @@ func TestUpdateContentEmptyReencrypts(t *testing.T) {
 // TestUpdateContentNilIsNoOp pins the symmetric contract: a nil
 // Content pointer (the JSON field was absent) leaves the row's
 // ciphertext and nonce untouched. Together with
-// TestUpdateContentEmptyReencrypts this fixes the
-// nil-vs-empty-slice ambiguity flagged by v1 semantic review issue
-// #1 for #8 + #9.
+// TestUpdateContentEmptyReencrypts this pins the distinction between a nil and
+// an explicit empty slice.
 func TestUpdateContentNilIsNoOp(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

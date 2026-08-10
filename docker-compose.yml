@@ -9,7 +9,7 @@ services:
       - TABBY_SYNC_DATA_DIR=/data
       - TABBY_SYNC_USERS_FILE=/data/users.yml
       - TABBY_SYNC_MASTER_KEY_PROVIDER=file
-      - APP_LOG_LEVEL=info
+      - APP_LOG_LEVEL=${APP_LOG_LEVEL:-info}
     volumes:
       - tabby-data:/data
     ports:

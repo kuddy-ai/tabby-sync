@@ -143,13 +143,9 @@ func (p *FileProvider) generate() ([]byte, error) {
 // Two error shapes are handled explicitly. Filesystem syscalls that
 // touch a single path return [*fs.PathError]; the rename step that
 // enforces 0o600 returns [*os.LinkError], which carries BOTH the
-// temp-file path (Old) and the canonical master.key path (New).
-// Older revisions of this helper only stripped [*fs.PathError], so a
-// rename failure leaked both paths through the cli logger because
-// the cli's scrubPaths cannot anticipate the random temp-file
-// suffix produced by os.CreateTemp. v1 review issue #4 / #5 for #10
-// flagged this; this branch closes the leak at the provider seam so
-// the cli layer never sees either path in the wrapped message.
+// temp-file path (Old) and the canonical master.key path (New). The LinkError
+// branch strips both paths at the provider seam because the CLI cannot know
+// the random temp-file suffix produced by os.CreateTemp.
 func wrapPathError(op string, err error) error {
 	var perr *fs.PathError
 	if errors.As(err, &perr) {

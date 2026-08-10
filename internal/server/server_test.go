@@ -135,8 +135,7 @@ func TestServerRejectsOversizedBody(t *testing.T) {
 // security headers and a non-empty X-Request-Id on a recorded response,
 // regardless of the underlying status code. The chain order in
 // internal/server/server.go promises these land on every response,
-// including 413 (from MaxBodyBytes) and panic-induced 500 (from Recover);
-// review v1, issue #2 asked for that promise to be tested directly.
+// including 413 (from MaxBodyBytes) and panic-induced 500 (from Recover).
 func assertSecurityHeadersAndRequestID(t *testing.T, rr *httptest.ResponseRecorder) {
 	t.Helper()
 	wantHeaders := map[string]string{
@@ -397,9 +396,9 @@ func TestHealthzWithTrailingSlashIsStillProtected(t *testing.T) {
 	}
 }
 
-// TestHealthzWithNonGetMethodIsStillProtected pins the v1 review's fix
-// for issue #3: the bypass key is (path == "/healthz") AND (method ==
-// GET or HEAD). A POST request to /healthz must still be gated by the
+// TestHealthzWithNonGetMethodIsStillProtected pins that the bypass key is
+// (path == "/healthz") AND (method == GET or HEAD). A POST request to
+// /healthz must still be gated by the
 // auth middleware so the auth-before-mux contract holds for any verb
 // the mux does not register; if the bypass were path-only, POST
 // /healthz would skip auth and return 405 (revealing the route shape)

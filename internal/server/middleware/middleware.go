@@ -120,8 +120,8 @@ func MustFromContext(ctx context.Context) string {
 // interfaces ([http.Hijacker], [http.CloseNotifier], [http.Pusher]) are
 // not forwarded today because no current handler relies on them.
 //
-// TODO(#5-followup): forward Hijacker/CloseNotifier/Pusher once a handler
-// in this codebase actually requires them. See review v1, issue #7.
+// If a future route requires another optional ResponseWriter interface, add
+// and test its forwarding at the same time as that route.
 type statusRecorder struct {
 	http.ResponseWriter
 	status      int
@@ -290,7 +290,7 @@ const DefaultMaxBodyBytes int64 = 2 << 20
 // Memory cost: this middleware buffers up to limit+1 bytes per in-flight
 // request before the handler runs, trading the streaming behaviour of
 // [http.MaxBytesReader] for the "413 even when the handler ignores the
-// body" guarantee. With the [DefaultMaxBodyBytes] cap of 1 MiB this is
+// body" guarantee. With the [DefaultMaxBodyBytes] cap of 2 MiB this is
 // bounded; raising the limit also raises peak memory per concurrent
 // request, so any future increase should be paired with a switch to a
 // streaming enforcement strategy.

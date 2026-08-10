@@ -350,7 +350,7 @@ func TestListReturnsCreated(t *testing.T) {
 // flip `""` -> nil -> `null` on re-encode and hide a regression.
 // The assertion is on the raw bytes via map[string]json.RawMessage
 // so a future change that emitted `""` for an unset value would
-// flip the test. v1 semantic review issue #7 for #8 + #9.
+// flip the test.
 func TestListContainsNullLastUsedWithVersion(t *testing.T) {
 	t.Parallel()
 
@@ -522,11 +522,9 @@ func TestPatchIdenticalContentIsIdempotent(t *testing.T) {
 
 // TestPatchContentEmptyClearsRow pins the documented contract that
 // PATCH {"content": ""} actually clears the row's plaintext under a
-// fresh nonce instead of being silently a no-op. v1 semantic review
-// issue #1 for #8 + #9 flagged the prior wrapper signal
-// (`len(patch.Content) > 0`) as conflating nil and an explicit empty
-// slice; the fix promotes the patch field to *[]byte and forwards a
-// non-nil pointer when the JSON `content` field is present, even
+// fresh nonce instead of being silently a no-op. A length-only signal would
+// conflate nil and an explicit empty slice, so the handler forwards a non-nil
+// pointer when the JSON `content` field is present, even
 // when its value is the empty string. The test asserts both: the
 // PATCH response carries content="" and the next GET returns "".
 func TestPatchContentEmptyClearsRow(t *testing.T) {
@@ -775,12 +773,11 @@ func TestMalformedJSONReturns400(t *testing.T) {
 	}
 }
 
-// TestNonNumericConfigIDReturns404 pins the v1-review-aligned
-// contract that any path id which cannot resolve to a valid row
+// TestNonNumericConfigIDReturns404 pins the contract that any path id which
+// cannot resolve to a valid row
 // (`abc`, `0`, `-1`) folds into the same 404 not-found shape as a
-// well-formed but missing or cross-user id. v1 semantic review
-// issue #5 for #8 + #9 noted the prior 400-vs-404 split as a
-// minor disclosure surface.
+// well-formed but missing or cross-user id, avoiding a distinguishable
+// disclosure surface.
 func TestNonNumericConfigIDReturns404(t *testing.T) {
 	t.Parallel()
 
@@ -809,8 +806,7 @@ func TestNonNumericConfigIDReturns404(t *testing.T) {
 // well-formed-but-invalid integer ids (0, negative). The method
 // matrix mirrors TestNonNumericConfigIDReturns404 so a future
 // change that special-cases the non-GET methods for id <= 0 would
-// be caught at the handler layer. v1 semantic review issue #5 and
-// v2 semantic review residual #2 for #8 + #9.
+// be caught at the handler layer.
 func TestNonPositiveConfigIDReturns404(t *testing.T) {
 	t.Parallel()
 
@@ -932,7 +928,7 @@ func TestContentTypeIsJSON(t *testing.T) {
 	assertJSONContentType(t, resp, "400 invalid request")
 
 	// 404 not found (non-numeric id; folded into the same shape as
-	// cross-user / missing per v1 review issue #5).
+	// cross-user / missing).
 	resp, _ = doRequest(t, ts, http.MethodGet, "/api/1/configs/abc", ts.userAToken, nil)
 	assertJSONContentType(t, resp, "404 not found (non-numeric id)")
 
@@ -1013,10 +1009,8 @@ func TestErrorPathsDoNotLeakSecrets(t *testing.T) {
 //   - the captured slog output does NOT carry the synthetic
 //     Path substring or the synthetic inner error message.
 //
-// v2 semantic review residual #1 for #8 + #9 promotes the prior
-// documentation-only assumption (writeStoreError comment in v1
-// review fix 8bc034f) to a structural one by removing the err
-// field at the helper layer; this test pins the absence.
+// The helper has no error field, making the no-echo rule structural; this test
+// pins that absence.
 func TestWriteStoreErrorCatchAllDoesNotEchoWrappedError(t *testing.T) {
 	t.Parallel()
 

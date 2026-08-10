@@ -37,6 +37,10 @@ jobs:
           push: false
           platforms: linux/amd64
           tags: tabby-sync:smoke
+          build-args: |
+            VERSION=0.0.0-dev
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ github.event.repository.updated_at }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -61,6 +65,16 @@ jobs:
           echo "Smoke test failed: /healthz did not return HTTP 200" >&2
           docker logs "$CONTAINER_NAME" >&2
           exit 1
+
+      - name: Verify development build identity
+        env:
+          CONTAINER_NAME: tabby-sync-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+          BUILD_COMMIT: ${{ github.sha }}
+        run: |
+          output="$(docker exec "$CONTAINER_NAME" tabby-sync version)"
+          echo "$output"
+          grep -F -- "0.0.0-dev" <<< "$output"
+          grep -F -- "$BUILD_COMMIT" <<< "$output"
 
       - name: Remove smoke test container
         if: always()
@@ -112,5 +126,9 @@ jobs:
           platforms: linux/amd64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ github.event.release.tag_name }}
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ github.event.release.published_at }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

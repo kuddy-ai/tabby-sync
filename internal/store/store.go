@@ -76,11 +76,8 @@ type Config struct {
 // Name is treated as opaque by the store layer: any non-NULL string,
 // including the empty string, is accepted by the schema and by the
 // SQLite implementation. Validation of Name (length limits, character
-// restrictions, uniqueness) is the responsibility of the upcoming API
-// layer (issue #8) where the user-facing error model lives, not the
-// store. This boundary is called out here in response to v1 semantic
-// review issue #5 for #6 so future readers do not mistake the lack of
-// a store-layer guard for an oversight.
+// restrictions, uniqueness) belongs to the API layer where the user-facing
+// error model lives, not the storage implementation.
 type CreateConfigInput struct {
 	Name                string
 	ContentCiphertext   []byte
@@ -100,11 +97,8 @@ type CreateConfigInput struct {
 // SQL NULL into a single state: passing a non-nil pointer to "" on an
 // update writes SQL NULL on disk, and a NULL row reads back as the
 // empty Go string. Callers that need to clear the field should pass
-// a non-nil pointer to "". v1 semantic review issue #4 for #6
-// flagged this as a one-way mapping; the store contract pins it as
-// intentional so the upcoming API layer (issue #8) does not need to
-// invent a tri-state for a field whose only consumer treats "" as the
-// "no version recorded" signal anyway.
+// a non-nil pointer to "". This one-way mapping is intentional: the API
+// exposes null as the single "no version recorded" state.
 type UpdateConfigPatch struct {
 	Name                *string
 	ContentCiphertext   []byte
@@ -119,19 +113,6 @@ type UpdateConfigPatch struct {
 	PreserveModifiedAt bool
 	ExpectedModifiedAt *time.Time
 }
-
-// ErrQuotaExceeded is returned by higher layers when a user has reached
-// the maximum number of allowed configurations. Currently the API layer
-// checks the quota and returns HTTP 409 directly; this sentinel is
-// retained for future use by middleware or store-layer enforcement via
-// errors.Is.
-var ErrQuotaExceeded = errors.New("store: config quota exceeded")
-
-// ErrContentTooLarge is returned when a config content payload exceeds
-// the maximum allowed size (2 MB). Currently the API layer validates
-// content size and returns HTTP 413 directly; this sentinel is retained
-// for future use by middleware or store-layer enforcement via errors.Is.
-var ErrContentTooLarge = errors.New("store: content too large")
 
 // Store is the persistence contract every backend must satisfy.
 //

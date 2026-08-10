@@ -17,15 +17,18 @@
 #                 loading. Logged on the success path of the auth
 #                 middleware to attribute requests; do NOT use a
 #                 secret here.
-#   token_prefix  Short (~8 character) human display fragment of the
-#                 token, typically the first few characters of a
-#                 tbs_-prefixed token. Operators use it to identify a
-#                 credential without revealing it.
+#   token_prefix  Short human display fragment of the token. The CLI
+#                 stores the first 12 characters of generated tbs_ tokens.
+#                 Operators use it to identify a credential without
+#                 revealing the full value.
 #   token_hash    Lowercase hex-encoded SHA-256 of the token plaintext
 #                 bytes. The plaintext token MUST NOT be stored here;
-#                 only the hash. Until issue #11 ships a CLI helper to
-#                 generate these safely, operators can produce a hash
-#                 with the standard Unix toolchain:
+#                 only the hash. Prefer `tabby-sync user add <name>` or
+#                 `tabby-sync user rotate <name-or-id>` so token creation,
+#                 hashing, prefix selection, and atomic file replacement
+#                 use the implementation's canonical behavior.
+#
+#                 For schema testing only, a hash can be produced with:
 #
 #                   printf %s "<token>" | sha256sum | awk '{print $1}'
 #

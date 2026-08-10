@@ -120,9 +120,8 @@ func TestFileProviderErrorDoesNotLeakPath(t *testing.T) {
 	}
 }
 
-// TestWrapPathErrorStripsLinkError is the regression test for v1
-// review issues #4 and #5 of issue #10: os.Rename returns a
-// [*os.LinkError] (not a [*fs.PathError]), so an older
+// TestWrapPathErrorStripsLinkError verifies that os.Rename's
+// [*os.LinkError] (not a [*fs.PathError]) cannot expose either path. An older
 // wrapPathError that only stripped [*fs.PathError] leaked both the
 // canonical master.key path AND the random temp-file path through
 // the wrapped error. The cli's scrubPaths can redact the canonical
@@ -134,8 +133,7 @@ func TestFileProviderErrorDoesNotLeakPath(t *testing.T) {
 // non-empty directory and called Load(), but that route
 // short-circuits at os.ReadFile(target), which returns
 // [*fs.PathError] (with Err: syscall.EISDIR) and never enters
-// generate() or os.Rename; v2 review confirmed the test passed
-// even after the LinkError branch was reverted. The current shape
+// generate() or os.Rename, so it does not cover this branch. The current shape
 // feeds a synthesized [*os.LinkError] directly to the unexported
 // wrapPathError helper (re-exported as WrapPathErrorForTest in
 // export_test.go) so the rename branch is pinned even if no live

@@ -28,7 +28,7 @@ if [[ -z "$staged_files" ]]; then
 fi
 
 # Reject sensitive files.
-sensitive_pattern='(^|/)(\.env|\.env\..*|credentials\..*|secrets\..*|token\..*|id_rsa|id_ed25519|.*\.pem|.*\.key|.*\.p12|.*\.pfx|credentials\.json|secrets\.json)$'
+sensitive_pattern='(^|/)(\.env|\.env\..*|credentials\..*|secrets\..*|token\..*|users\.yml|users\.yml\.tmp|.*\.db|.*\.db-wal|.*\.db-shm|.*\.db-journal|id_rsa|id_ed25519|.*\.pem|.*\.key|.*\.p12|.*\.pfx|credentials\.json|secrets\.json)$'
 
 while IFS= read -r file; do
   if [[ "$file" =~ $sensitive_pattern ]]; then
@@ -64,13 +64,13 @@ else
 fi
 
 # Debug-code warning only, do not block.
-debug_pattern='console\.log|debugger|dbg!|println!|fmt\.Println|log\.Printf|TODO|FIXME'
+debug_pattern='fmt\.Println|log\.Printf|TODO|FIXME'
 
 while IFS= read -r file; do
   if [[ -f "$file" ]]; then
-    if grep -nE "$debug_pattern" "$file" >/tmp/precommit-debug-lines 2>/dev/null; then
+    if debug_lines="$(grep -nE "$debug_pattern" "$file" 2>/dev/null)"; then
       echo "WARNING: debug or temporary marker found in $file:"
-      cat /tmp/precommit-debug-lines
+      printf '%s\n' "$debug_lines"
     fi
   fi
 done <<< "$staged_files"

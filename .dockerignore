@@ -11,12 +11,24 @@
 
 # Build artifacts
 /bin
+/build
+/dist
 /out
 
-# Environment and secrets
-.env
+# Environment, credentials, runtime data, and backups
+.env*
 *.key
 *.pem
+token.*
+users.yml
+users.yml.tmp
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+/data
+/var/tabby-sync
+/backups
 
 # Documentation (not needed in container)
 docs/

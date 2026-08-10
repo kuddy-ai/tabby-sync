@@ -180,9 +180,8 @@ func TestReloadFailureKeepsOldSnapshot(t *testing.T) {
 	}
 }
 
-// TestReloadConcurrentLookupContention pins the v1 review's fix for
-// issue #5: prove the atomic.Pointer snapshot swap holds up under
-// contention. A pool of goroutines hammers Lookup against a token that
+// TestReloadConcurrentLookupContention proves the atomic.Pointer snapshot
+// swap holds up under contention. A pool of goroutines hammers Lookup against a token that
 // is valid in fixture A and invalid in fixture B while a separate
 // goroutine alternates Reload(A)/Reload(B) for the duration of the
 // run. The race detector catches data races; this test catches torn

@@ -37,6 +37,5 @@ The runner wraps each migration in its own transaction together with
 the bookkeeping insert into `schema_migrations`, so a failed migration
 leaves the database in a consistent state at the previous version.
 
-This document was added in response to v1 semantic review issue #3 for
-issue #6 to make the constraint visible at the place where future
-migrations actually get authored.
+Keep this constraint visible at the place where future migrations are authored;
+the runner deliberately does not implement a complete SQL tokenizer.

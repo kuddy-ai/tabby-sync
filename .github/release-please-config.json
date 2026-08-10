@@ -9,9 +9,7 @@
     { "type": "fix", "section": "Bug Fixes" },
     { "type": "perf", "section": "Performance" },
     { "type": "security", "section": "Security" },
-    { "type": "deps", "section": "Dependencies" },
-    { "type": "chore", "section": "Maintenance" },
-    { "type": "docs", "section": "Documentation" }
+    { "type": "deps", "section": "Dependencies" }
   ],
   "packages": {
     ".": {
