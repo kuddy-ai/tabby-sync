@@ -75,86 +75,40 @@ func (s *Store) Close() error {
 // CreateConfigPlaintext encrypts in.Content and persists the resulting
 // row via the underlying [store.Store].
 //
-// SQLite assigns the configID via AUTOINCREMENT, so the wrapper cannot
-// know the canonical AAD until the row has been inserted. The
-// implementation therefore takes a two-step path:
-//
-//  1. Encrypt the plaintext with a placeholder AAD (configID=0) and
-//     insert the row.
-//  2. Re-encrypt the same plaintext under the assigned configID and
-//     update the row in place.
-//
-// If step 2 fails synchronously, the wrapper attempts to delete the
-// orphaned row so the database does not retain a record that no
-// future read could open. A failure to delete is appended to the
-// returned error but does not change the primary failure mode.
-//
-// Known window: a process kill, host crash, or power loss BETWEEN
-// step 1 and step 2 leaves the row on disk with the placeholder
-// (userID, 0) AAD, which no future read can open. A concurrent
-// same-user Get or List that races a Create can also observe the
-// placeholder row and surface [crypto.ErrDecrypt] until the UPDATE
-// lands; this transient window closes as soon as step 2 returns.
-//
-// Closing the orphan window in the wrapper alone is not possible
-// without either extending the [store.Store] interface with a
-// transaction primitive or moving the two-step write into the
-// SQLite implementation. The atomic implementation is tracked in issue #71;
-// until it lands, docs/CRYPTO.md ("Two-Step Write" / "Power-loss orphan
-// window" / "Operator recovery for an orphan row") is the documented escape
-// hatch.
+// The callback-shaped [store.Store.CreateConfigWithID] contract gives this
+// wrapper the final configID while the underlying ID reservation is still
+// uncommitted. Encryption therefore happens exactly once with canonical
+// (userID, configID) AAD. Any encryption, persistence, or commit failure rolls
+// the transaction back, and concurrent readers cannot observe an intermediate
+// row. The persistence layer remains unaware of keys, plaintext, and AAD.
 func (s *Store) CreateConfigPlaintext(ctx context.Context, userID int64, in store.CreateConfigPlaintextInput) (store.ConfigWithPlaintext, error) {
-	// Step 1: encrypt with placeholder configID=0 and insert.
-	ct1, nonce1, err := crypto.Encrypt(s.masterKey, userID, 0, in.Content)
-	if err != nil {
-		return store.ConfigWithPlaintext{}, fmt.Errorf("encrypted: encrypt placeholder: %w", err)
-	}
-	row, err := s.inner.CreateConfig(ctx, userID, store.CreateConfigInput{
-		Name:                in.Name,
-		ContentCiphertext:   ct1,
-		ContentNonce:        nonce1,
-		LastUsedWithVersion: in.LastUsedWithVersion,
+	row, err := s.inner.CreateConfigWithID(ctx, userID, func(configID int64) (store.CreateConfigInput, error) {
+		ct, nonce, err := crypto.Encrypt(s.masterKey, userID, configID, in.Content)
+		if err != nil {
+			return store.CreateConfigInput{}, fmt.Errorf("encrypted: encrypt create: %w", err)
+		}
+		return store.CreateConfigInput{
+			Name:                in.Name,
+			ContentCiphertext:   ct,
+			ContentNonce:        nonce,
+			LastUsedWithVersion: in.LastUsedWithVersion,
+		}, nil
 	})
 	if err != nil {
 		return store.ConfigWithPlaintext{}, err
 	}
-
-	// Step 2: re-encrypt under the canonical (userID, configID=row.ID)
-	// AAD and update the row. If anything in step 2 fails, attempt to
-	// delete the orphaned row so the database does not keep an
-	// undecryptable record around.
-	ct2, nonce2, err := crypto.Encrypt(s.masterKey, userID, row.ID, in.Content)
-	if err != nil {
-		delErr := s.inner.DeleteConfig(ctx, userID, row.ID)
-		if delErr != nil && !errors.Is(delErr, store.ErrConfigNotFound) {
-			return store.ConfigWithPlaintext{}, fmt.Errorf("encrypted: encrypt: %w (rollback failed: %v)", err, delErr)
-		}
-		return store.ConfigWithPlaintext{}, fmt.Errorf("encrypted: encrypt: %w", err)
-	}
-	updated, err := s.inner.UpdateConfig(ctx, userID, row.ID, store.UpdateConfigPatch{
-		ContentCiphertext: ct2,
-		ContentNonce:      nonce2,
-	})
-	if err != nil {
-		delErr := s.inner.DeleteConfig(ctx, userID, row.ID)
-		if delErr != nil && !errors.Is(delErr, store.ErrConfigNotFound) {
-			return store.ConfigWithPlaintext{}, fmt.Errorf("encrypted: finalise insert: %w (rollback failed: %v)", err, delErr)
-		}
-		return store.ConfigWithPlaintext{}, fmt.Errorf("encrypted: finalise insert: %w", err)
-	}
-
 	// Re-attach the plaintext we already have rather than calling
 	// Decrypt again on the freshly-written row: we know the
 	// plaintext exactly and skipping the round-trip avoids one AES
 	// decryption per Create call.
 	return store.ConfigWithPlaintext{
-		ID:                  updated.ID,
-		UserID:              updated.UserID,
-		Name:                updated.Name,
+		ID:                  row.ID,
+		UserID:              row.UserID,
+		Name:                row.Name,
 		Content:             append([]byte(nil), in.Content...),
-		LastUsedWithVersion: updated.LastUsedWithVersion,
-		CreatedAt:           updated.CreatedAt,
-		ModifiedAt:          updated.ModifiedAt,
+		LastUsedWithVersion: row.LastUsedWithVersion,
+		CreatedAt:           row.CreatedAt,
+		ModifiedAt:          row.ModifiedAt,
 	}, nil
 }
 
@@ -184,14 +138,12 @@ func (s *Store) GetConfigPlaintext(ctx context.Context, userID, configID int64) 
 // first decrypt failure aborts the iteration with [crypto.ErrDecrypt]
 // returned UNWRAPPED.
 //
-// Policy (v1, fail-closed): a tampered, replayed, or orphaned row
-// MUST NOT silently disappear from the caller's view. A single
-// undecryptable row therefore bricks the whole list path until the
-// row is removed; this is intentional. Skip-and-tag and
-// structured-failure variants were considered, but the public API intentionally
-// keeps the fail-closed default. See docs/CRYPTO.md ("List Failure Policy") for
-// the full discussion and the recovery procedure; issue #71 tracks removal of
-// the placeholder-row failure window.
+// Policy (v1, fail-closed): a tampered, replayed, or otherwise invalid row
+// MUST NOT silently disappear from the caller's view. A single undecryptable
+// row therefore fails the whole list; this is intentional. Skip-and-tag and
+// structured-failure variants were considered, but the public API keeps the
+// fail-closed default. Atomic creation prevents new placeholder-AAD rows; see
+// docs/CRYPTO.md ("List Failure Policy") for the full discussion.
 func (s *Store) ListConfigsByUserPlaintext(ctx context.Context, userID int64) ([]store.ConfigWithPlaintext, error) {
 	rows, err := s.inner.ListConfigsByUser(ctx, userID)
 	if err != nil {

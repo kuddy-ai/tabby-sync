@@ -727,6 +727,194 @@ func TestUpdateConfigPreserveModifiedAtRejectsStaleCAS(t *testing.T) {
 	}
 }
 
+func TestCreateConfigWithIDPreservesMonotonicTimestamp(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlite.Open(ctx, newDBPath(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+
+	fixed := time.Date(2026, 8, 10, 12, 0, 0, 123456789, time.UTC)
+	sqlite.SetClockForTest(t, func() time.Time { return fixed })
+	created, err := st.CreateConfigWithID(ctx, 30, func(configID int64) (store.CreateConfigInput, error) {
+		return store.CreateConfigInput{
+			Name:              "clock",
+			ContentCiphertext: []byte{0xA1},
+			ContentNonce:      []byte{0xB2},
+		}, nil
+	})
+	if err != nil {
+		t.Fatalf("CreateConfigWithID: %v", err)
+	}
+	if !created.CreatedAt.Equal(fixed) {
+		t.Fatalf("CreatedAt = %v; want %v", created.CreatedAt, fixed)
+	}
+	wantModified := fixed.Add(time.Millisecond)
+	if !created.ModifiedAt.Equal(wantModified) {
+		t.Fatalf("ModifiedAt = %v; want %v", created.ModifiedAt, wantModified)
+	}
+}
+
+func TestCreateConfigWithIDRollsBackBuilderFailure(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	path := newDBPath(t)
+	st, err := sqlite.Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+
+	buildErr := errors.New("builder failed (test)")
+	buildCalls := 0
+	_, err = st.CreateConfigWithID(ctx, 31, func(configID int64) (store.CreateConfigInput, error) {
+		buildCalls++
+		if configID <= 0 {
+			t.Errorf("reserved configID = %d; want positive", configID)
+		}
+		return store.CreateConfigInput{}, buildErr
+	})
+	if !errors.Is(err, buildErr) {
+		t.Fatalf("CreateConfigWithID error = %v; want builder marker", err)
+	}
+	if buildCalls != 1 {
+		t.Fatalf("builder calls = %d; want exactly 1", buildCalls)
+	}
+
+	if got, err := st.CountConfigsByUser(ctx, 31); err != nil || got != 0 {
+		t.Fatalf("count after builder failure = %d, %v; want 0, nil", got, err)
+	}
+	db := inspect(t, path)
+	if got := queryInt(t, db, `SELECT COUNT(*) FROM configs`); got != 0 {
+		t.Fatalf("persisted rows after builder failure = %d; want 0", got)
+	}
+}
+
+func TestCreateConfigWithIDRollsBackInjectedFinalisationFailure(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	path := newDBPath(t)
+	st, err := sqlite.Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+
+	db := inspect(t, path)
+	if _, err := db.Exec(`
+        CREATE TRIGGER inject_atomic_create_failure
+        AFTER UPDATE OF content_ciphertext ON configs
+        BEGIN
+            SELECT RAISE(ABORT, 'injected atomic create failure');
+        END`); err != nil {
+		t.Fatalf("create failure-injection trigger: %v", err)
+	}
+
+	_, err = st.CreateConfigWithID(ctx, 32, func(configID int64) (store.CreateConfigInput, error) {
+		return store.CreateConfigInput{
+			Name:                "finalised-before-failure",
+			ContentCiphertext:   []byte{0xA1},
+			ContentNonce:        []byte{0xB2},
+			LastUsedWithVersion: "1.2.3",
+		}, nil
+	})
+	if err == nil {
+		t.Fatal("CreateConfigWithID succeeded; want injected finalisation failure")
+	}
+	if got := queryInt(t, db, `SELECT COUNT(*) FROM configs`); got != 0 {
+		t.Fatalf("persisted rows after finalisation failure = %d; want 0", got)
+	}
+}
+
+func TestCreateConfigWithIDHidesReservedRowFromConcurrentReader(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	path := newDBPath(t)
+	writer, err := sqlite.Open(ctx, path)
+	if err != nil {
+		t.Fatalf("open writer: %v", err)
+	}
+	defer writer.Close()
+	reader, err := sqlite.Open(ctx, path)
+	if err != nil {
+		t.Fatalf("open reader: %v", err)
+	}
+	defer reader.Close()
+
+	const userID int64 = 33
+	reserved := make(chan int64, 1)
+	release := make(chan struct{})
+	type createResult struct {
+		cfg store.Config
+		err error
+	}
+	done := make(chan createResult, 1)
+	go func() {
+		cfg, createErr := writer.CreateConfigWithID(ctx, userID, func(configID int64) (store.CreateConfigInput, error) {
+			reserved <- configID
+			<-release
+			return store.CreateConfigInput{
+				Name:                "atomic",
+				ContentCiphertext:   []byte{0xCA, 0xFE},
+				ContentNonce:        []byte{0xBA, 0xBE},
+				LastUsedWithVersion: "2.0.0",
+			}, nil
+		})
+		done <- createResult{cfg: cfg, err: createErr}
+	}()
+
+	var reservedID int64
+	select {
+	case reservedID = <-reserved:
+	case <-time.After(2 * time.Second):
+		close(release)
+		t.Fatal("timed out waiting for reserved ID")
+	}
+
+	readCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	rows, readErr := reader.ListConfigsByUser(readCtx, userID)
+	cancel()
+	close(release)
+
+	var result createResult
+	select {
+	case result = <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for atomic create to commit")
+	}
+	if readErr != nil {
+		t.Fatalf("concurrent ListConfigsByUser: %v", readErr)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("concurrent reader observed %d uncommitted rows; want 0", len(rows))
+	}
+	if result.err != nil {
+		t.Fatalf("CreateConfigWithID: %v", result.err)
+	}
+	if result.cfg.ID != reservedID || result.cfg.UserID != userID {
+		t.Fatalf("created identity = (%d, %d); want (%d, %d)", result.cfg.UserID, result.cfg.ID, userID, reservedID)
+	}
+	if !result.cfg.ModifiedAt.After(result.cfg.CreatedAt) {
+		t.Fatalf("create timestamp is not monotonic: created=%v modified=%v", result.cfg.CreatedAt, result.cfg.ModifiedAt)
+	}
+
+	rows, err = reader.ListConfigsByUser(ctx, userID)
+	if err != nil {
+		t.Fatalf("post-commit ListConfigsByUser: %v", err)
+	}
+	if len(rows) != 1 || rows[0].ID != reservedID || rows[0].Name != "atomic" {
+		t.Fatalf("post-commit rows = %+v; want one finalised row", rows)
+	}
+	otherRows, err := reader.ListConfigsByUser(ctx, userID+1)
+	if err != nil || len(otherRows) != 0 {
+		t.Fatalf("cross-user list = %+v, %v; want empty, nil", otherRows, err)
+	}
+}
+
 // TestModifiedAtRoundTripsThroughRFC3339 pins that the on-disk
 // modified_at format (RFC3339Nano) parses cleanly with both
 // time.RFC3339Nano and the stricter time.RFC3339, so typical clients

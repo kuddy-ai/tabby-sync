@@ -85,100 +85,41 @@ tabby-sync supports two master-key providers, selected by
 - A decoded length other than 32 bytes is rejected with
   `keys.ErrInvalidLength`.
 
-## Two-Step Write
+## Atomic ID-Bound Create
 
-SQLite assigns the row id via AUTOINCREMENT, so the canonical AAD
-(which embeds the configID) cannot be known until the row has been
-inserted. The encrypted-store wrapper therefore runs a two-step
-write on `CreateConfigPlaintext`:
+SQLite assigns each row id with AUTOINCREMENT, while the canonical AAD needs
+that final configID before encryption. The generic store contract resolves the
+ordering with `CreateConfigWithID`:
 
-1. Encrypt the plaintext with a placeholder configID of `0`, INSERT
-   the row, and read back the assigned id.
-2. Re-encrypt the plaintext under the canonical
-   `(userID, assignedConfigID)` AAD with a fresh nonce, then UPDATE
-   the row in place.
+1. SQLite starts `BEGIN IMMEDIATE` and inserts an uncommitted sentinel row to
+   reserve the final id.
+2. The store calls the encrypted layer's builder with that id. The builder
+   encrypts once under canonical `(userID, assignedConfigID)` AAD and returns
+   only opaque ciphertext and nonce bytes.
+3. SQLite replaces the sentinel values and commits the completed row in the
+   same transaction.
 
-If step 2 fails synchronously (Encrypt error, UPDATE error) the
-wrapper attempts to DELETE the orphaned row so the database does not
-retain an undecryptable record. A regression test in
-`internal/store/encrypted` pins this rollback.
+The sentinel row is never a placeholder-AAD ciphertext and is never visible to
+another connection. A builder, update, process, or commit
+failure rolls the transaction back, leaving no row. Readers therefore observe
+either no row or one fully authenticated row. The callback-shaped contract
+also keeps the boundary generic: the encrypted layer knows nothing about
+SQLite, and the SQLite layer knows nothing about plaintext, keys, AAD, or the
+envelope format. Finalisation retains the existing sync-clock rule:
+`modified_at` is strictly later than `created_at`, including when the wall
+clock stalls or moves backwards.
 
-### Power-loss orphan window (known limitation)
+Deterministic store tests hold the transaction open while another connection
+lists rows, and inject failures both in the builder and during finalisation.
+Encryption tests verify that create uses the final configID and never falls
+back to the former create/update/delete compensation path.
 
-Three failure modes between step 1 and step 2 leave a row whose AAD
-is `(userID, 0)` instead of `(userID, assignedConfigID)`, which no
-future read can open:
-
-- a process kill (SIGKILL, OOM kill) between INSERT and UPDATE;
-- a host crash or power loss between INSERT and UPDATE;
-- a same-user `Get` or `List` that races a `Create` and observes the
-  row before the UPDATE has landed (transient: the next read after
-  step 2 lands works again).
-
-The first two leave a permanent orphan; the third is a transient
-window that closes once the UPDATE returns. Both surface to callers
-as `crypto.ErrDecrypt` returned UNWRAPPED (fail-closed: the wrapper
-refuses to return data it cannot authenticate).
-
-The closure for the orphan window is to wrap INSERT and UPDATE in a single
-`database/sql` transaction so the placeholder row is never visible to readers
-and self-cleans on rollback. The atomic implementation and deterministic
-failure tests are tracked in
-[#71](https://github.com/kuddy-ai/tabby-sync/issues/71). Until that Issue is
-closed, the orphan recovery procedure below is the documented escape hatch.
-
-### Operator recovery for an orphan row
-
-Until the transactional write lands, an operator faced with a
-permanent orphan row has these options:
-
-- delete the SQLite row directly (`DELETE FROM configs WHERE id=?`)
-  if the configID is known;
-- rebuild the affected user's row set from the upstream client's
-  local copy (Tabby's local config is the source of truth in normal
-  operation);
-- restore from a pre-incident backup of `tabby-sync.db` (which is
-  why the BACKUP imperative below applies to the database too).
-
-`ListConfigsByUserPlaintext` aborts on the first decrypt failure
-(see below), so an orphan row currently bricks the affected user's
-list path until the row is removed. This is a deliberate
-fail-closed posture documented as the v1 List policy; see the next
-section.
-
-#### Discovering the orphan's configID
-
-The first option above presupposes the operator already knows the
-orphan's configID, but `ListConfigsByUserPlaintext` is the only
-public surface that returns config ids and it is bricked precisely
-when an orphan exists. Until the transactional fix lands there is
-no in-process diagnostic path; the operator MUST query the SQLite
-file directly. With the server stopped (or at minimum after a
-checkpoint, because the WAL sidecar is also part of the on-disk
-state):
-
-```
-sqlite3 "${TABBY_SYNC_DATA_DIR}/tabby-sync.db" \
-  'SELECT id, length(content_ciphertext) FROM configs WHERE user_id = ?;'
-```
-
-An orphan cannot be distinguished from a valid row by inspection
-alone, since both rows hold ciphertext+nonce of the same shape. A
-heuristic that works in practice: the most-recently-inserted id
-for the affected user is by definition the row whose two-step
-UPDATE never landed and is therefore the orphan candidate. The
-operator should cross-check that id against the upstream client's
-local config inventory before issuing `DELETE FROM configs WHERE
-id=?`. The user's list path will heal as soon as the orphan row
-is gone; the dropped data MUST then be restored from one of the
-remaining options (upstream client copy, pre-incident database
-backup).
-
-This direct-SQLite step is the only documented recovery path
-until the transactional fix lands. It is intentionally not
-exposed through the wrapper or any HTTP surface; surfacing it
-would re-open the very class of attack (silently hiding rows) the
-fail-closed v1 List policy is designed to prevent.
+This change does not migrate existing rows or alter the schema or envelope. If
+an installation upgraded from an older release and already contains an
+undecryptable row, restore a known-good database backup or rebuild the affected
+configuration from Tabby's local copy. Direct SQL deletion is deliberately not
+recommended: encrypted rows cannot be identified as valid or invalid by their
+stored shape alone, so guessing an id risks deleting healthy data.
 
 ## List Failure Policy (v1)
 
@@ -190,10 +131,9 @@ result. The policy is fail-closed:
 - a tampered or replayed row MUST NOT silently disappear from the
   caller's view (a partial result without a flagged integrity
   failure would let an attacker hide rows by corrupting them);
-- a single orphan row from a power-loss event between the two-step
-  write's INSERT and UPDATE bricks the rest of the user's list
-  until the orphan is removed (see the operator recovery list
-  above).
+- a single tampered, replayed, or legacy-invalid row fails the entire list
+  rather than being silently hidden. Atomic ID-bound creation prevents new
+  placeholder-AAD rows from entering this state.
 
 Alternatives that were considered for the HTTP failure shape:
 
@@ -206,8 +146,8 @@ Alternatives that were considered for the HTTP failure shape:
   store tests pin via `errors.Is`.
 
 The current HTTP API maps a list decryption failure to a generic 500 and returns
-no partial rows. Issue #71 keeps that fail-closed contract while removing the
-placeholder-row failure window.
+no partial rows. Atomic creation removes the placeholder-row failure window
+without weakening that fail-closed contract.
 
 ## Logging Discipline
 

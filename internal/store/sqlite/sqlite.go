@@ -238,11 +238,30 @@ var nowFn func() time.Time = time.Now
 // nowRFC3339Nano returns nowFn() in UTC formatted as RFC3339Nano. It is
 // extracted so the migrations runner and CreateConfig produce identical
 // timestamps and so the format can be changed in one place if the
-// schema ever evolves. UpdateConfig formats its own timestamp directly
-// (it needs the parsed time.Time value to compute old + 1ms) and so
-// does not call this helper.
+// schema ever evolves. UpdateConfig and CreateConfigWithID format their own
+// timestamps directly because they retain time.Time values for the strict
+// monotonicity calculation.
 func nowRFC3339Nano() string {
 	return nowFn().UTC().Format(time.RFC3339Nano)
+}
+
+// nextModifiedAt returns a write timestamp strictly later than old, even when
+// the wall clock stalls or moves backwards. Both UpdateConfig and the
+// finalisation phase of CreateConfigWithID use this helper so the atomic create
+// preserves the existing encrypted-create sync-clock semantics.
+func nextModifiedAt(old time.Time) time.Time {
+	candidate := nowFn().UTC()
+	if !candidate.After(old) {
+		return old.Add(time.Millisecond)
+	}
+	return candidate
+}
+
+func validateCreateInput(in store.CreateConfigInput) error {
+	if len(in.ContentCiphertext) == 0 || len(in.ContentNonce) == 0 {
+		return fmt.Errorf("%w: ciphertext and nonce are required", store.ErrInvalidPatch)
+	}
+	return nil
 }
 
 // CreateConfig inserts a new row owned by userID and returns it.
@@ -252,8 +271,8 @@ func nowRFC3339Nano() string {
 // row's CreatedAt and ModifiedAt are set to the same wall-clock instant
 // in UTC.
 func (s *Store) CreateConfig(ctx context.Context, userID int64, in store.CreateConfigInput) (store.Config, error) {
-	if len(in.ContentCiphertext) == 0 || len(in.ContentNonce) == 0 {
-		return store.Config{}, fmt.Errorf("%w: ciphertext and nonce are required", store.ErrInvalidPatch)
+	if err := validateCreateInput(in); err != nil {
+		return store.Config{}, err
 	}
 
 	now := nowRFC3339Nano()
@@ -280,6 +299,95 @@ func (s *Store) CreateConfig(ctx context.Context, userID int64, in store.CreateC
 	}
 
 	return s.GetConfig(ctx, userID, id)
+}
+
+// CreateConfigWithID reserves a row ID and finalises the row in one
+// BEGIN IMMEDIATE transaction. The temporary row exists only inside that
+// transaction, so another connection sees either no row or the fully-built
+// row after commit. build receives the final AUTOINCREMENT ID and can produce
+// ID-bound opaque bytes (the encrypted-store uses it for canonical AAD)
+// without making SQLite aware of encryption details.
+func (s *Store) CreateConfigWithID(ctx context.Context, userID int64, build store.CreateConfigInputBuilder) (store.Config, error) {
+	if build == nil {
+		return store.Config{}, fmt.Errorf("%w: create builder is required", store.ErrInvalidPatch)
+	}
+
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return store.Config{}, fmt.Errorf("sqlite: begin create tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	createdAt := nowFn().UTC()
+	createdAtText := createdAt.Format(time.RFC3339Nano)
+	// These sentinel blobs satisfy the NOT NULL schema only long enough to
+	// reserve the AUTOINCREMENT ID. SQLite does not expose uncommitted writes
+	// to other connections, and every return before Commit rolls them back.
+	res, err := tx.ExecContext(ctx,
+		`INSERT INTO configs
+            (user_id, name, content_ciphertext, content_nonce, last_used_with_version, created_at, modified_at)
+         VALUES (?, ?, ?, ?, NULL, ?, ?)`,
+		userID,
+		"",
+		[]byte{0},
+		[]byte{0},
+		createdAtText,
+		createdAtText,
+	)
+	if err != nil {
+		return store.Config{}, fmt.Errorf("sqlite: reserve config id: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return store.Config{}, fmt.Errorf("sqlite: reserved config id: %w", err)
+	}
+
+	in, err := build(id)
+	if err != nil {
+		return store.Config{}, fmt.Errorf("sqlite: build config: %w", err)
+	}
+	if err := validateCreateInput(in); err != nil {
+		return store.Config{}, err
+	}
+
+	result, err := tx.ExecContext(ctx,
+		`UPDATE configs
+            SET name = ?, content_ciphertext = ?, content_nonce = ?, last_used_with_version = ?, modified_at = ?
+          WHERE id = ? AND user_id = ?`,
+		in.Name,
+		in.ContentCiphertext,
+		in.ContentNonce,
+		nullIfEmpty(in.LastUsedWithVersion),
+		nextModifiedAt(createdAt).Format(time.RFC3339Nano),
+		id,
+		userID,
+	)
+	if err != nil {
+		return store.Config{}, fmt.Errorf("sqlite: finalise config: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return store.Config{}, fmt.Errorf("sqlite: finalise rows affected: %w", err)
+	}
+	if affected != 1 {
+		return store.Config{}, errors.New("sqlite: finalise config: expected one reserved row")
+	}
+
+	row, err := scanConfig(tx.QueryRowContext(ctx,
+		`SELECT id, user_id, name, content_ciphertext, content_nonce,
+                last_used_with_version, created_at, modified_at
+           FROM configs
+          WHERE id = ? AND user_id = ?`,
+		id, userID,
+	))
+	if err != nil {
+		return store.Config{}, fmt.Errorf("sqlite: read finalised config: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return store.Config{}, fmt.Errorf("sqlite: commit create: %w", err)
+	}
+	return row, nil
 }
 
 // GetConfig returns the row identified by configID IFF it is owned by
@@ -403,13 +511,7 @@ func (s *Store) UpdateConfig(ctx context.Context, userID, configID int64, patch 
 	setClauses := make([]string, 0, 4)
 	args := make([]any, 0, 6)
 	if !patch.PreserveModifiedAt {
-		candidate := nowFn().UTC()
-		if !candidate.After(old) {
-			// Wall clock did not advance (or jumped backwards). Step
-			// strictly past the row's existing modified_at by exactly 1ms
-			// so subsequent reads still see strictly-monotonic timestamps.
-			candidate = old.Add(time.Millisecond)
-		}
+		candidate := nextModifiedAt(old)
 		setClauses = append(setClauses, "modified_at = ?")
 		args = append(args, candidate.Format(time.RFC3339Nano))
 	}
